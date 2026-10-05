@@ -1,0 +1,2 @@
+import {Mic,MicOff} from 'lucide-react';
+export function MicButton({listening,onClick,disabled}:{listening:boolean;onClick:()=>void;disabled?:boolean}){return <button type="button" disabled={disabled} onClick={onClick} aria-label={listening?'Stop listening':'Start voice input'} className={`grid h-11 w-11 place-items-center rounded-full text-ink transition ${listening?'bg-accent':'bg-accent-soft'} disabled:opacity-40`}>{listening?<MicOff size={19}/>:<Mic size={19}/>}</button>}

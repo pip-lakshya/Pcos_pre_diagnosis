@@ -1,0 +1,9 @@
+# Lifestyle and dietary management
+
+There is no single PCOS diet or food list proven best for everyone, and current international guidance does not support one diet composition as superior for PCOS outcomes. A sustainable eating pattern based on general healthy-eating guidance, personal preferences, culture, budget, and health needs is more appropriate than extreme restriction. A registered dietitian or clinician can help tailor advice. [2023 International PCOS Guideline](https://doi.org/10.1016/j.fertnstert.2023.07.025)
+
+No particular food must be avoided by every person with PCOS based on the information in this guide. If a food affects a person's symptoms or another diagnosed condition, they can discuss that with a qualified clinician. Be cautious with detoxes, unregulated supplements, or diets promising to cure PCOS; they may be ineffective or unsafe, and restrictive approaches can make it harder to meet nutritional needs. [2023 International PCOS Guideline](https://doi.org/10.1016/j.fertnstert.2023.07.025) · [ACOG: PCOS](https://www.acog.org/womens-health/faqs/polycystic-ovary-syndrome-pcos)
+
+Regular movement that is enjoyable and sustainable can support general and metabolic health. There is no one exercise type or intensity established as best for every PCOS outcome; starting with a manageable amount and reducing long sedentary periods can be useful. Sleep, emotional wellbeing, and practical support also matter. Changes should be adapted to disability, symptoms, preferences, and clinician guidance. [2023 International PCOS Guideline](https://doi.org/10.1016/j.fertnstert.2023.07.025)
+
+Lifestyle support is not a substitute for medical assessment or treatment when needed. This is general screening education, not a diagnosis; consult a doctor or qualified dietitian for advice specific to you.

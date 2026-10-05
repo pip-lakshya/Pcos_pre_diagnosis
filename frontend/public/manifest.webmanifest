@@ -1,0 +1,14 @@
+{
+  "name": "NariSaarthi — Women’s Health Awareness & Support",
+  "short_name": "NariSaarthi",
+  "description": "A women-centric community for health awareness, early attention and support.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#FDEFED",
+  "theme_color": "#FDEFED",
+  "icons": [
+    {"src": "/narisaarthi-icon-192.svg", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any"},
+    {"src": "/narisaarthi-icon-512.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}

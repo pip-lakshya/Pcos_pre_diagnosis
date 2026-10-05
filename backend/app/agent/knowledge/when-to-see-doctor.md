@@ -1,0 +1,7 @@
+# When to see a doctor and urgent symptoms
+
+Arrange a routine appointment with a healthcare professional if periods are persistently irregular or absent, if acne or unwanted hair growth is worsening, if scalp hair is thinning, if you have fertility concerns, or if you are worried about possible PCOS. Missing three periods in a row is also a reason to contact a clinician. These symptoms have multiple possible causes, so evaluation matters. [NHS: missed or late periods](https://www.nhs.uk/symptoms/missed-or-late-periods/) · [ACOG: PCOS](https://www.acog.org/womens-health/faqs/polycystic-ovary-syndrome-pcos)
+
+Seek medical advice for bleeding that lasts more than seven days or soaks through a pad or tampon every hour for several hours. Sudden severe pelvic pain, fainting, or heavy bleeding with marked weakness needs urgent medical attention; do not assume these symptoms are due to PCOS. If symptoms feel severe or rapidly worsening, use local urgent or emergency services. [ACOG: heavy menstrual bleeding](https://www.acog.org/womens-health/faqs/heavy-menstrual-bleeding) · [NHS: period pain](https://www.nhs.uk/symptoms/period-pain/)
+
+A clinician can review menstrual history, symptoms, and relevant tests, and can discuss metabolic health checks when appropriate. A screening estimate cannot tell what is causing symptoms or determine what care an individual needs. This information is not a diagnosis; consult a doctor for your specific situation.
