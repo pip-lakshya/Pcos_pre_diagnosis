@@ -1,12 +1,30 @@
 from collections.abc import Generator
+from urllib.parse import urlsplit
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
 
-_connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=_connect_args, pool_pre_ping=True)
+def _build_engine():
+    database_url = settings.database_url.strip()
+    if database_url.startswith("libsql://") or database_url.startswith("https://"):
+        if not settings.turso_auth_token:
+            raise RuntimeError("TURSO_AUTH_TOKEN is required when DATABASE_URL points to Turso")
+        parsed = urlsplit(database_url)
+        if not parsed.netloc:
+            raise RuntimeError("DATABASE_URL must contain a valid Turso database host")
+        # Turso's SQLAlchemy dialect expects the `sqlite+libsql` driver URL;
+        # the endpoint supplied by Turso is commonly `libsql://<host>`.
+        database_url = f"sqlite+libsql://{parsed.netloc}?secure=true"
+        connect_args = {"auth_token": settings.turso_auth_token}
+    else:
+        connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
+
+    return create_engine(database_url, connect_args=connect_args, pool_pre_ping=True)
+
+
+engine = _build_engine()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 

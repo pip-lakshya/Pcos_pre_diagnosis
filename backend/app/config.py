@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     magpie_tts_voice: str = "Magpie-Multilingual.EN-US.Aria"
     osm_contact_email: str = ""
     database_url: str = f"sqlite:///{ROOT / 'pcos_agent.sqlite3'}"
+    turso_auth_token: str = ""
     model_path: str = str(ROOT / "ml" / "pcos_rf_model.pkl")
     features_path: str = str(ROOT / "ml" / "pcos_model_features.json")
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
