@@ -11,7 +11,7 @@
 - [x] Verify register/login and invalid-password behavior, protected route 401s, full authenticated chat using the canonical model, database history, retrieval relevance, out-of-scope refusal, and frontend production build.
 - [x] Add full name and normalized phone registration fields with safe additive migration for existing SQLite databases.
 - [x] Add configurable JWT expiry and distinguish expired-token responses; expire frontend sessions on protected-route 401s.
-- [x] Add background Gmail SMTP admin/welcome messages, with safe logging and registration success preserved on mail failures.
+- [x] Add background email delivery through Gmail SMTP or Resend HTTPS API, with safe logging and registration success preserved on mail failures.
 - [x] Add admin-key protected CSV/XLSX exports and a matching local CLI export script without password hashes.
 - [x] Add English browser voice selection, voice preference storage, sentence chunking/cancellation, and optional authenticated Edge TTS endpoint/provider selection.
 - [x] Make NIM follow-up generation time bounded and recover to a local screening-safe question instead of an unhandled 500; align frontend's default backend URL with Uvicorn's IPv4 bind and show a useful connection message.
@@ -20,7 +20,7 @@
 ## Still to do before production use
 
 - [ ] Re-run direct NVIDIA extraction and generated research-answer checks when the NVIDIA NIM endpoint is reachable; direct requests timed out during this run.
-- [ ] Verify registration email delivery with real Gmail App Password settings.
+- [ ] Configure a Resend API key and verified sender in Render, then verify real registration and contact email delivery. Mocked API tests do not confirm provider acceptance or delivery.
 - [ ] Verify browser voice selection/STT/TTS on target browsers and Edge TTS playback with network access and `edge-tts` installed.
 - [ ] Use HTTPS and a managed secret store in deployment; review localStorage token storage for the intended threat model.
 - [ ] Decide whether unfinished screening sessions should persist across backend restarts.

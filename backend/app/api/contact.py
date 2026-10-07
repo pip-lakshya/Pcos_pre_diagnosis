@@ -42,7 +42,14 @@ class ContactRequest(BaseModel):
 
 @router.post("/contact", status_code=status.HTTP_202_ACCEPTED)
 def submit_contact(request: ContactRequest, background_tasks: BackgroundTasks):
-    if not (settings.smtp_user and settings.smtp_app_password and settings.admin_notify_email):
+    provider_ready = (
+        settings.admin_notify_email
+        and (
+            (settings.email_provider == "resend" and settings.resend_api_key and settings.email_from)
+            or (settings.email_provider == "smtp" and settings.smtp_user and settings.smtp_app_password)
+        )
+    )
+    if not provider_ready:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The contact form email service is not configured yet. Please use the social links instead.",

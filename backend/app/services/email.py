@@ -1,10 +1,17 @@
 import logging
+import json
 import smtplib
 from email.message import EmailMessage
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class EmailProviderError(Exception):
+    """A safe, credential-free email provider failure suitable for logs."""
 
 
 def _safe_body_value(value: str) -> str:
@@ -23,7 +30,7 @@ def _message(to_address: str, subject: str, body: str) -> EmailMessage:
     return message
 
 
-def _send_one(message: EmailMessage) -> None:
+def _send_smtp(message: EmailMessage) -> None:
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
         smtp.ehlo()
         smtp.starttls()
@@ -32,10 +39,59 @@ def _send_one(message: EmailMessage) -> None:
         smtp.send_message(message)
 
 
+def _send_resend(to_address: str, subject: str, body: str, reply_to: str | None = None) -> None:
+    payload = {
+        "from": settings.email_from,
+        "to": [to_address],
+        "subject": subject,
+        "text": body,
+    }
+    if reply_to:
+        payload["reply_to"] = reply_to
+    request = Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=15) as response:
+            if not 200 <= response.status < 300:
+                raise EmailProviderError(f"Email API returned HTTP {response.status}")
+            response.read()
+    except HTTPError as error:
+        # Do not log response bodies: providers can echo recipients or message data.
+        raise EmailProviderError(f"Email API returned HTTP {error.code}") from None
+    except URLError:
+        # Avoid logging the request, API key, or user-submitted message.
+        raise EmailProviderError("Email API connection failed") from None
+
+
+def _send_one(to_address: str, subject: str, body: str, reply_to: str | None = None) -> None:
+    if settings.email_provider == "resend":
+        _send_resend(to_address, subject, body, reply_to)
+        return
+    message = _message(to_address, subject, body)
+    if reply_to:
+        message["Reply-To"] = reply_to
+    _send_smtp(message)
+
+
+def _email_is_configured() -> bool:
+    if not settings.admin_notify_email:
+        return False
+    if settings.email_provider == "resend":
+        return bool(settings.resend_api_key and settings.email_from)
+    return bool(settings.smtp_user and settings.smtp_app_password)
+
+
 def send_registration_emails(full_name: str, email: str, phone: str, created_at: str) -> None:
     """Send admin notification and welcome email; safe to invoke as a background task."""
-    if not settings.smtp_user or not settings.smtp_app_password or not settings.admin_notify_email:
-        logger.warning("Registration emails skipped: SMTP settings are incomplete")
+    if not _email_is_configured():
+        logger.warning("Registration emails skipped: email provider settings are incomplete")
         return
     clean_name = _safe_body_value(full_name)
     clean_email = _safe_body_value(email)
@@ -43,12 +99,12 @@ def send_registration_emails(full_name: str, email: str, phone: str, created_at:
     clean_created = _safe_body_value(created_at)
     try:
         messages = (
-            _message(
+            (
                 settings.admin_notify_email,
                 "New PCOS screening account registered",
                 f"A new account was created.\n\nName: {clean_name}\nEmail: {clean_email}\nPhone: {clean_phone}\nRegistered at: {clean_created}\n",
             ),
-            _message(
+            (
                 clean_email,
                 "Welcome to the PCOS screening companion",
                 f"Hello {clean_name},\n\nYour account is ready. You can use it to complete a screening and review your screening history.\n\nPlease remember: the screening tool provides an estimate, not a diagnosis. It does not replace medical care. Please consult a doctor about your health concerns.\n",
@@ -57,30 +113,31 @@ def send_registration_emails(full_name: str, email: str, phone: str, created_at:
     except Exception as error:
         logger.warning("Registration emails skipped (%s)", type(error).__name__)
         return
-    for label, message in zip(("admin notification", "welcome message"), messages):
+    for label, (to_address, subject, body) in zip(("admin notification", "welcome message"), messages):
         try:
-            _send_one(message)
+            _send_one(to_address, subject, body)
         except Exception as error:  # A mail outage must never affect registration.
-            logger.warning("Could not send registration %s (%s)", label, type(error).__name__)
+            reason = str(error) if isinstance(error, EmailProviderError) else type(error).__name__
+            logger.warning("Could not send registration %s (%s)", label, reason)
 
 
 def send_contact_email(name: str, email: str, subject: str, body: str) -> None:
     """Forward a public website enquiry to the configured team inbox."""
-    if not settings.smtp_user or not settings.smtp_app_password or not settings.admin_notify_email:
-        logger.warning("Website contact email skipped: SMTP settings are incomplete")
+    if not _email_is_configured():
+        logger.warning("Website contact email skipped: email provider settings are incomplete")
         return
     clean_name = _safe_body_value(name)
     clean_email = _safe_body_value(email)
     clean_subject = _safe_body_value(subject)
     clean_body = "".join(ch for ch in body if ch in "\t\n\r " or ord(ch) >= 32).strip()
     try:
-        message = _message(
+        _send_one(
             settings.admin_notify_email,
             "NariSaarthi website contact form submission",
             f"New website enquiry\n\nName: {clean_name}\nEmail: {clean_email}\nSubject: {clean_subject}\n\nMessage:\n{clean_body}\n",
+            reply_to=clean_email,
         )
-        message["Reply-To"] = clean_email
-        _send_one(message)
     except Exception as error:
         # Never log submitted message contents or SMTP credentials.
-        logger.warning("Could not send website contact email (%s)", type(error).__name__)
+        reason = str(error) if isinstance(error, EmailProviderError) else type(error).__name__
+        logger.warning("Could not send website contact email (%s)", reason)
