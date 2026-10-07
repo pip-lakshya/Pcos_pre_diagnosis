@@ -1,7 +1,9 @@
 import logging
 import json
 import smtplib
+import base64
 from email.message import EmailMessage
+from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -20,10 +22,11 @@ def _safe_body_value(value: str) -> str:
 
 
 def _message(to_address: str, subject: str, body: str) -> EmailMessage:
-    if any("\r" in value or "\n" in value for value in (settings.smtp_user, to_address, subject)):
+    sender = settings.gmail_sender_email if settings.email_provider == "gmail_api" else settings.smtp_user
+    if any("\r" in value or "\n" in value for value in (sender, to_address, subject)):
         raise ValueError("Unsafe email header value")
     message = EmailMessage()
-    message["From"] = settings.smtp_user
+    message["From"] = sender
     message["To"] = to_address
     message["Subject"] = subject
     message.set_content(body)
@@ -70,9 +73,58 @@ def _send_resend(to_address: str, subject: str, body: str, reply_to: str | None 
         raise EmailProviderError("Email API connection failed") from None
 
 
+def _send_gmail_api(message: EmailMessage) -> None:
+    """Exchange the stored refresh token and send a MIME message over HTTPS."""
+    token_request = Request(
+        "https://oauth2.googleapis.com/token",
+        data=urlencode({
+            "client_id": settings.gmail_client_id,
+            "client_secret": settings.gmail_client_secret,
+            "refresh_token": settings.gmail_refresh_token,
+            "grant_type": "refresh_token",
+        }).encode("ascii"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urlopen(token_request, timeout=15) as response:
+            token_data = json.loads(response.read())
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise EmailProviderError("Google OAuth did not return an access token")
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii").rstrip("=")
+        send_request = Request(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+            data=json.dumps({"raw": raw_message}).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urlopen(send_request, timeout=15) as response:
+            if not 200 <= response.status < 300:
+                raise EmailProviderError(f"Gmail API returned HTTP {response.status}")
+            response.read()
+    except HTTPError as error:
+        # Google error bodies can contain identifying data; keep logs generic.
+        endpoint = "OAuth" if error.url.startswith("https://oauth2.googleapis.com/") else "Gmail API"
+        raise EmailProviderError(f"Google {endpoint} returned HTTP {error.code}") from None
+    except URLError:
+        raise EmailProviderError("Google email service connection failed") from None
+    except (ValueError, KeyError, json.JSONDecodeError):
+        raise EmailProviderError("Google email service returned an invalid response") from None
+
+
 def _send_one(to_address: str, subject: str, body: str, reply_to: str | None = None) -> None:
     if settings.email_provider == "resend":
         _send_resend(to_address, subject, body, reply_to)
+        return
+    if settings.email_provider == "gmail_api":
+        message = _message(to_address, subject, body)
+        if reply_to:
+            message["Reply-To"] = reply_to
+        _send_gmail_api(message)
         return
     message = _message(to_address, subject, body)
     if reply_to:
@@ -85,6 +137,13 @@ def _email_is_configured() -> bool:
         return False
     if settings.email_provider == "resend":
         return bool(settings.resend_api_key and settings.email_from)
+    if settings.email_provider == "gmail_api":
+        return bool(
+            settings.gmail_sender_email
+            and settings.gmail_client_id
+            and settings.gmail_client_secret
+            and settings.gmail_refresh_token
+        )
     return bool(settings.smtp_user and settings.smtp_app_password)
 
 

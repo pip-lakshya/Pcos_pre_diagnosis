@@ -46,6 +46,13 @@ def submit_contact(request: ContactRequest, background_tasks: BackgroundTasks):
         settings.admin_notify_email
         and (
             (settings.email_provider == "resend" and settings.resend_api_key and settings.email_from)
+            or (
+                settings.email_provider == "gmail_api"
+                and settings.gmail_sender_email
+                and settings.gmail_client_id
+                and settings.gmail_client_secret
+                and settings.gmail_refresh_token
+            )
             or (settings.email_provider == "smtp" and settings.smtp_user and settings.smtp_app_password)
         )
     )
