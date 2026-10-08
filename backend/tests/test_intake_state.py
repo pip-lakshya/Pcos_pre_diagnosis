@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app.agent.session_store import Session, merge_features, missing
 from app.agent import feature_extractor
-from app.api.chat import _is_affirmative_confirmation
+from app.api.chat import _is_affirmative_confirmation, _is_correction_message, _is_restart_intent
 from app.agent.llm_client import _references_missing, fallback_question, next_question
 
 
@@ -117,14 +117,47 @@ class IntakeStateTests(unittest.TestCase):
         self.assertTrue(_is_affirmative_confirmation("Okay, that's accurate."))
         self.assertFalse(_is_affirmative_confirmation("No, actually my acne is not persistent."))
 
+    def test_labeled_weight_corrections_are_recognized_without_llm(self):
+        examples = (
+            ("mera sahi wajan 56 hai", 56.0),
+            ("my correct weight is 56", 56.0),
+            ("update my weight to 56", 56.0),
+            ("change my weight from 55 to 56 kg", 56.0),
+        )
+        for text, expected in examples:
+            with self.subTest(text=text):
+                updates = feature_extractor.recover_labeled_numeric_update(text)
+                self.assertEqual(updates, {"weight_kg": expected})
+                self.assertTrue(_is_correction_message(text))
+                with patch.object(feature_extractor, "OpenAI", side_effect=AssertionError("remote call")):
+                    self.assertEqual(feature_extractor.extract(text, {"weight_kg": 55.0}, []), updates)
+
+    def test_labeled_value_can_fill_a_previously_missing_field(self):
+        session = Session(user_id=9)
+        update = feature_extractor.recover_labeled_numeric_update("I forgot to mention my age is 24")
+        self.assertEqual(update, {"age": 24})
+        merge_features(session, update)
+        self.assertEqual(session.values["age"], 24)
+        self.assertNotIn("age", missing(session))
+
+    def test_new_chat_phrases_restart_a_screening(self):
+        for phrase in ("restart", "start over", "new chat", "test again", "phir se shuru karo", "नया टेस्ट"):
+            with self.subTest(phrase=phrase):
+                self.assertTrue(_is_restart_intent(phrase))
+
+    def test_field_correction_is_not_treated_as_confirmation(self):
+        self.assertTrue(_is_correction_message("my correct weight is 56"))
+        self.assertFalse(_is_affirmative_confirmation("my correct weight is 56"))
+        self.assertTrue(_is_correction_message("my acne is no"))
+
     def test_followup_must_reference_an_outstanding_field(self):
         self.assertTrue(_references_missing("How many days are there between periods?", ["cycle_length_days"]))
         self.assertFalse(_references_missing("Have you noticed acne?", ["age"]))
 
-    def test_hip_and_waist_are_optional_and_not_requested(self):
+    def test_hip_and_waist_are_optional_followup_questions(self):
         session = Session(user_id=7)
-        self.assertNotIn("hip_inch", missing(session))
-        self.assertNotIn("waist_inch", missing(session))
+        self.assertIn("hip_inch", missing(session))
+        self.assertIn("waist_inch", missing(session))
         self.assertEqual(missing(session)[0], "age")
 
     def test_hindi_yes_no_and_skip_are_recognized(self):

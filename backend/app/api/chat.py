@@ -3,7 +3,12 @@ import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.agent.feature_extractor import extract, is_skip_answer, skip_targets
+from app.agent.feature_extractor import (
+    extract,
+    is_skip_answer,
+    recover_labeled_numeric_update,
+    skip_targets,
+)
 from app.agent.llm_client import explain_prediction, fallback_question, next_question
 from app.agent.research_provider import KnowledgeBaseProvider
 from app.agent.session_store import OPTIONAL, derive_features, get_session, merge_features, missing
@@ -44,6 +49,46 @@ def _is_declining_start(message: str) -> bool:
     ))
 
 
+def _is_restart_intent(message: str) -> bool:
+    raw_text = message.lower()
+    if any(phrase in raw_text for phrase in ("फिर से शुरू", "नया टेस्ट", "नई चैट", "नया स्क्रीनिंग")):
+        return True
+    text = re.sub(r"[^\w]+", " ", message.lower(), flags=re.UNICODE).strip()
+    patterns = (
+        r"\brestart(?: the)?(?: pcos)?(?: screening| test| chat)?\b",
+        r"\bstart (?:the )?(?:screening|test|chat) again\b",
+        r"\bstart over\b", r"\bstart from (?:the )?beginning\b",
+        r"\bnew (?:chat|conversation|test|screening)\b",
+        r"\b(?:another|new) pcos test\b", r"\btake (?:the )?(?:test|screening) again\b",
+        r"\btest again\b", r"\bphir(?: se)? shuru(?: karo)?\b",
+        r"\bdobara shuru(?: karo)?\b", r"\bnaya test\b", r"\bnayi chat\b",
+        r"\bफिर से शुरू(?: करो)?\b", r"\bनया टेस्ट\b", r"\bनई चैट\b",
+    )
+    return len(text) <= 80 and any(re.search(pattern, text) for pattern in patterns)
+
+
+def _is_correction_message(message: str) -> bool:
+    if recover_labeled_numeric_update(message):
+        return True
+    text = message.lower()
+    labels = (
+        "age", "umar", "उम्र", "weight", "wazan", "wajan", "वज़न", "वजन",
+        "height", "lambai", "लंबाई", "cycle", "period", "पीरियड", "hip", "कूल्हे",
+        "waist", "कमर", "acne", "pimple", "hair", "baal", "बाल", "exercise",
+        "skin", "फास्ट फूड",
+    )
+    correction_words = (
+        "correct", "correction", "update", "change", "actually", "i meant", "i forgot",
+        "forgot to mention", "sahi", "sahi value", "badal", "galat", "गलत", "सही",
+    )
+    has_label = any(label in text for label in labels)
+    has_correction_marker = any(word in text for word in correction_words)
+    has_explicit_boolean = bool(re.search(
+        r"\b(?:yes|no|true|false|haan|han|nahi|nahin|nhi)\b|(?:हाँ|हां|नहीं|नही)", text
+    ))
+    return has_label and (has_correction_marker or has_explicit_boolean)
+
+
 def _answer_question_then_offer_start(message: str, history: list) -> str:
     try:
         answer = _education_provider.answer(message, {"recent_conversation": history[-6:]})
@@ -65,6 +110,8 @@ def _answer_question_then_offer_start(message: str, history: list) -> str:
 
 
 def _is_affirmative_confirmation(message: str) -> bool:
+    if _is_correction_message(message):
+        return False
     text = re.sub(r"[^\w']+", " ", message.lower(), flags=re.UNICODE).strip()
     if re.search(r"\b(no|nope|nahi|nahin|not|but|except|however|actually|instead|change|correction|गलत|नहीं)\b", text):
         return False
@@ -129,8 +176,8 @@ def _confirmation_summary(values: dict, skipped: set[str] | None = None, hinglis
         ("Aapne jo details batayi hain, please check kar lein: " if hinglish else
          "Before I calculate your screening estimate, please check that I understood you: ")
         + "; ".join(details)
-        + (". Kya yeh sahi hai? Haan keh dein, ya jo detail badalni ho bata dein." if hinglish else
-           ". Is this accurate? You can say yes, or tell me what you’d like to correct.")
+        + (". Kya yeh sahi hai? Haan kehkar confirm karein, ya koi detail update karne ke liye jaise ‘mera sahi wazan 56 hai’ ya ‘update my weight to 56 kg’ likhein. Agar pehle chhuti hui detail batani ho, woh bhi ab bata sakte hain." if hinglish else
+           ". Is this accurate? Say yes to confirm, or update a detail—for example, ‘my correct weight is 56’ or ‘update my weight to 56 kg’. You can also add a detail you left out earlier.")
     )
 
 
@@ -140,7 +187,17 @@ def chat(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    session_id, session = get_session(request.session_id, user.id)
+    restart_requested = _is_restart_intent(request.message)
+    session_id, session = get_session(None if restart_requested else request.session_id, user.id)
+    if restart_requested:
+        session.screening_started = True
+        session.history.append({"role": "user", "content": request.message})
+        reply = next_question(session.history, missing(session), session.values)
+        session.history.append({"role": "assistant", "content": reply})
+        return ChatResponse(
+            session_id=session_id, reply=reply, collected=session.values,
+            missing=missing(session), complete=False,
+        )
     if session.screening_id is not None:
         raise HTTPException(status_code=409, detail="This screening is complete; start a new session.")
 
@@ -170,11 +227,17 @@ def chat(
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=False,
             )
-    affirmative_confirmation = session.awaiting_confirmation and _is_affirmative_confirmation(request.message)
+    correction_message = _is_correction_message(request.message)
+    affirmative_confirmation = (
+        session.awaiting_confirmation
+        and _is_affirmative_confirmation(request.message)
+        and not correction_message
+    )
     negative_confirmation = (
         session.awaiting_confirmation
         and bool(re.search(r"\b(no|nope|nah|nahi|nahin|गलत|नहीं)\b", request.message.lower()))
         and not skip_targets(request.message, [])
+        and not correction_message
     )
     skip_request = not session.awaiting_confirmation and is_skip_answer(request.message)
     skip_reply = None

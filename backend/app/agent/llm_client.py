@@ -18,8 +18,8 @@ _QUESTION_TEMPLATES = {
         "acne": "Have you had persistent acne?",
         "fast_food": "Do you often eat fast food?",
         "regular_exercise": "Do you exercise regularly?",
-        "hip_inch": "Do you know your hip measurement in inches? You can skip it if you do not know.",
-        "waist_inch": "Do you know your waist measurement in inches? You can skip it if you do not know.",
+        "hip_inch": "Do you know your hip measurement in inches? (If you do not know write skip).",
+        "waist_inch": "Do you know your waist measurement in inches? (If you do not know write skip).",
 }
 
 _HINDI_QUESTIONS = {
@@ -35,8 +35,8 @@ _HINDI_QUESTIONS = {
     "acne": "Kya aapko abhi acne ya pimples hote hain?",
     "fast_food": "Kya aap hafte mein kam se kam ek baar fast food khate hain?",
     "regular_exercise": "Kya aap regular exercise karte hain?",
-    "hip_inch": "Agar aapko pata ho, hip measurement batayein. Aap ise skip bhi kar sakte hain.",
-    "waist_inch": "Agar aapko pata ho, waist measurement batayein. Aap ise skip bhi kar sakte hain.",
+    "hip_inch": "Agar aapko pata ho, hip measurement batayein. (Agar aap ko nahi pata to skip likh sakte hain).",
+    "waist_inch": "Agar aapko pata ho, waist measurement batayein. (Agar aap ko nahi pata to skip likh sakte hain).",
 }
 
 
