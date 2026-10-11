@@ -3,11 +3,11 @@ import {ArrowDown, ArrowRight, HeartHandshake, Menu, ShieldCheck, Sparkles, User
 
 const API=import.meta.env.VITE_API_URL||'http://127.0.0.1:8000';
 const team=[
- {name:'Lakshya Bhandari',phone:'7357278264'},
- {name:'Tanvi Mathur',phone:'7023101461'},
- {name:'Kajal Sharma',phone:'8290116181'},
- {name:'Khushal Shrimal',phone:'6375937817'},
- {name:'Khushboo Suwalka',phone:'9929823850'},
+ {name:'Lakshya Bhandari',Email:'bhandarilakshya14@gmail.com'},
+ {name:'Tanvi Mathur',Email:'tanvimathur.2006@gmail.com'},
+ {name:'Kajal Sharma',Email:'kajaldixit2105@gmail.com'},
+ {name:'Khushal Shrimal',Email:'khushalshrimal@gmail.com'},
+ {name:'Khushboo Suwalka',Email:'khushbusuwalka2006@gmail.com'},
 ];
 const whatsapp='https://chat.whatsapp.com/JY8rU15Ij52IUOfcrTNkmT';
 const instagram='https://www.instagram.com/narisaarthi/';
