@@ -36,7 +36,7 @@ app.add_middleware(
     # Browser APIs use bearer Authorization headers, not cookies.
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Cache-Control"],
 )
 app.include_router(auth_router)
 app.include_router(admin_router)

@@ -51,6 +51,20 @@ class ContactWorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotEqual(response.headers.get("access-control-allow-origin"), "https://attacker.example")
 
+    async def test_screening_history_preflight_allows_auth_and_cache_control(self):
+        response = await self.client.options(
+            "/screenings/me",
+            headers={
+                "Origin": "https://narisaarthi.site",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,cache-control",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "https://narisaarthi.site")
+        self.assertIn("authorization", response.headers.get("access-control-allow-headers", "").lower())
+        self.assertIn("cache-control", response.headers.get("access-control-allow-headers", "").lower())
+
     async def test_valid_submission_returns_success_only_after_provider_accepts(self):
         with patch("app.api.contact.run_in_threadpool", new=AsyncMock(return_value=True)) as deliver:
             response = await self.client.post(
