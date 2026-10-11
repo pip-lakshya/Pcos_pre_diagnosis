@@ -58,11 +58,14 @@ function ContactForm(){
  const [values,setValues]=useState({name:'',email:'',subject:'',message:''});
  const [status,setStatus]=useState('');const [busy,setBusy]=useState(false);const [failed,setFailed]=useState(false);
  const submit=async(event:FormEvent)=>{
-  event.preventDefault();setStatus('');setFailed(false);setBusy(true);
+  event.preventDefault();if(busy)return;setStatus('');setFailed(false);setBusy(true);
   try{
    const response=await fetch(`${API}/contact`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(values)});
    const data=await response.json().catch(()=>({}));
-   if(!response.ok)throw new Error(data.detail||`Message could not be sent (HTTP ${response.status}).`);
+   if(!response.ok){
+    const safeMessage=response.status===422?'Please check the form fields and try again.':response.status===503?'The contact email service is not configured yet. Please reach us through the social links.':response.status===502?'We could not deliver your message right now. Please try again later or use the social links.':'The message could not be sent. Please try again later.';
+    throw new Error(safeMessage);
+   }
    setStatus(data.message||'Thanks for reaching out. Your message is on its way to our team.');setValues({name:'',email:'',subject:'',message:''});
   }catch(error){setFailed(true);setStatus(error instanceof TypeError?'We could not connect to the contact service. Please try again or reach us through the social links.':error instanceof Error?error.message:'Message could not be sent. Please try again.')}
   finally{setBusy(false)}

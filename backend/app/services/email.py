@@ -183,8 +183,7 @@ def send_registration_emails(full_name: str, email: str, phone: str, created_at:
 def send_contact_email(name: str, email: str, subject: str, body: str) -> None:
     """Forward a public website enquiry to the configured team inbox."""
     if not _email_is_configured():
-        logger.warning("Website contact email skipped: email provider settings are incomplete")
-        return
+        raise EmailProviderError("Contact email provider is not configured")
     clean_name = _safe_body_value(name)
     clean_email = _safe_body_value(email)
     clean_subject = _safe_body_value(subject)
@@ -200,3 +199,6 @@ def send_contact_email(name: str, email: str, subject: str, body: str) -> None:
         # Never log submitted message contents or SMTP credentials.
         reason = str(error) if isinstance(error, EmailProviderError) else type(error).__name__
         logger.warning("Could not send website contact email (%s)", reason)
+        if isinstance(error, EmailProviderError):
+            raise
+        raise EmailProviderError("Contact email provider rejected the message") from None

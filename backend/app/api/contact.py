@@ -1,13 +1,24 @@
 import re
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.services.email import send_contact_email
 
 router = APIRouter(tags=["contact"])
 _EMAIL = re.compile(r"^[^\s@\r\n]+@[^\s@\r\n]+\.[^\s@\r\n]+$")
+
+
+def _deliver_contact_email(name: str, email: str, subject: str, message: str) -> bool:
+    """Keep provider exceptions inside the worker thread and expose no internals."""
+    try:
+        send_contact_email(name, email, subject, message)
+        return True
+    except Exception:
+        return False
 
 
 class ContactRequest(BaseModel):
@@ -40,8 +51,8 @@ class ContactRequest(BaseModel):
         return value.strip()
 
 
-@router.post("/contact", status_code=status.HTTP_202_ACCEPTED)
-def submit_contact(request: ContactRequest, background_tasks: BackgroundTasks):
+@router.post("/contact", status_code=status.HTTP_200_OK)
+async def submit_contact(request: ContactRequest):
     provider_ready = (
         settings.admin_notify_email
         and (
@@ -57,11 +68,19 @@ def submit_contact(request: ContactRequest, background_tasks: BackgroundTasks):
         )
     )
     if not provider_ready:
-        raise HTTPException(
+        return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The contact form email service is not configured yet. Please use the social links instead.",
+            content={"detail": "The contact form email service is not configured yet. Please use the social links instead."},
         )
-    background_tasks.add_task(
-        send_contact_email, request.name, request.email, request.subject, request.message
-    )
-    return {"message": "Thanks for reaching out. Your message has been queued for the NariSaarthi team."}
+    try:
+        delivered = await run_in_threadpool(
+            _deliver_contact_email, request.name, request.email, request.subject, request.message
+        )
+    except Exception:
+        delivered = False
+    if not delivered:
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": "We could not deliver your message right now. Please try again later or use the social links."},
+        )
+    return {"message": "Thanks for reaching out. Your message was sent to the NariSaarthi team."}

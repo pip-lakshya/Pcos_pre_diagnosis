@@ -25,10 +25,18 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Narisaarthi — Empower Your PCOS Journey", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",")],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=list(dict.fromkeys(
+        [
+            origin.strip().rstrip("/")
+            for origin in settings.cors_origins.split(",")
+            if origin.strip() and origin.strip() != "*"
+        ]
+        + ["https://narisaarthi.site", "https://www.narisaarthi.site"]
+    )),
+    # Browser APIs use bearer Authorization headers, not cookies.
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 app.include_router(auth_router)
 app.include_router(admin_router)
