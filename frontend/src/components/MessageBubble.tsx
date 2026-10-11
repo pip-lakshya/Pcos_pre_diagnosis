@@ -36,5 +36,5 @@ export function MessageBubble({message}: {message:Message}){
   else body.push(<p key={index}>{inline(line)}</p>);
   index++;
  }
- return <div className={`flex ${user?'justify-end':'justify-start'}`}><div className={`max-w-[90%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm ${user?'rounded-br-md bg-accent text-ink':'rounded-bl-md border border-accent-soft bg-white text-ink'}`}>{body}</div></div>;
+ return <div className={`flex ${user?'justify-end':'justify-start'}`}><div role={message.kind==='summary'?'group':undefined} aria-label={message.kind==='summary'?'Screening summary':undefined} className={`max-w-[95%] space-y-2 rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm sm:max-w-[90%] ${user?'rounded-br-md bg-accent text-ink':message.kind==='summary'?'rounded-bl-md border-2 border-accent bg-gradient-to-br from-white via-[#fff8f7] to-[#fbe1e2] text-ink':'rounded-bl-md border border-accent-soft bg-white text-ink'}`}>{message.kind==='summary'&&<h2 className="text-base font-semibold text-accent">Screening summary</h2>}{body}</div></div>;
 }

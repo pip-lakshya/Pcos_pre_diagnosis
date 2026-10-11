@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 class PredictRequest(BaseModel):
@@ -21,6 +21,7 @@ class ChatResponse(BaseModel):
     prediction: PredictResponse | None = None
     screening_id: int | None = None
     awaiting_confirmation: bool = False
+    message_type: Literal["summary"] | None = None
 
 
 class NearbyDoctorRequest(BaseModel):

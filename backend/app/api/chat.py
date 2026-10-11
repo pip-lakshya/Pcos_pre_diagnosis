@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -11,7 +12,7 @@ from app.agent.feature_extractor import (
 )
 from app.agent.llm_client import explain_prediction, fallback_question, next_question
 from app.agent.research_provider import KnowledgeBaseProvider
-from app.agent.session_store import OPTIONAL, derive_features, get_session, merge_features, missing
+from app.agent.session_store import BOOLEAN_FEATURES, INTAKE_ORDER, OPTIONAL, derive_features, get_session, merge_features, missing
 from app.auth.security import get_current_user
 from app.db.database import get_db
 from app.db.models import Screening, User
@@ -21,6 +22,145 @@ from app.models.schemas import ChatRequest, ChatResponse
 router = APIRouter()
 MAX_INTAKE_TURNS = 15
 _education_provider = KnowledgeBaseProvider()
+
+_SUMMARY_INTENT = re.compile(
+    r"\b(show|give|summari[sz]e|display|tell me|what have you recorded|what did i provide)\b.{0,50}\b(summary|answers|details|screening)\b|"
+    r"\b(summary|answers|details)\b.{0,30}\b(show|please|my|current|updated)\b|"
+    r"\bwhat have you recorded\b|\bwhat did i answer\b|\bwhat have i answered\b|\bwhat did i provide\b|"
+    r"(meri summary|mera summary|summary dikhao|mere jawab|kya record kiya|meri details)", re.I
+)
+_FIELD_ALIASES = {
+    "age": ("age", "umar", "उम्र"), "weight_kg": ("weight", "wazan", "wajan", "वजन", "वज़न"),
+    "height_cm": ("height", "lambai", "लंबाई"), "cycle_irregular": ("irregular period", "irregular cycles", "cycle regularity", "regular cycles", "periods", "period"),
+    "cycle_length_days": ("cycle length", "period length", "days between periods"),
+    "weight_gain": ("weight gain", "wazan gain"), "hair_growth": ("hair growth", "facial hair", "body hair"),
+    "skin_darkening": ("skin darkening", "dark skin", "dark patches"), "hair_loss": ("hair loss", "hair fall"),
+    "acne": ("acne", "pimple"), "fast_food": ("fast food", "junk food"),
+    "regular_exercise": ("exercise", "workout"), "hip_inch": ("hip measurement", "hips", "hip", "कूल्हे"),
+    "waist_inch": ("waist measurement", "waist", "कमर"),
+}
+
+
+def _is_summary_request(message: str) -> bool:
+    return bool(_SUMMARY_INTENT.search(message))
+
+
+def _field_requested(message: str) -> str | None:
+    text = message.lower()
+    found = {key for key, aliases in _FIELD_ALIASES.items() if any(re.search(
+        rf"(?<!\w){re.escape(alias)}(?!\w)" if alias.isascii() else re.escape(alias), text, re.I
+    ) for alias in aliases)}
+    # A query about cycles can refer to regularity or length; ask rather than guess.
+    return next(iter(found)) if len(found) == 1 else None
+
+
+def _is_personal_lookup(message: str) -> bool:
+    text = message.lower()
+    return bool(_field_requested(message) and re.search(
+        r"\b(what|which|did i|have i|what was|what is|tell me|recorded|answer|report|provide|missing|not provided)\b|"
+        r"(kya|maine|bataya|diya|mera|meri|kitna|kitni)", text, re.I
+    )) or bool(re.search(r"(which answers|what answers).{0,20}(missing|not provided)|kya.{0,20}(nahi bataya|missing)|"
+                         r"(current|my|mera|meri).{0,25}(estimate|score|risk percentage)|(estimate|score|risk).{0,20}(current|my|mera|meri)", text, re.I))
+
+
+def _explicit_correction(message: str) -> tuple[dict, str | None, str | None]:
+    """Return (updates, clarification, short change label) for unambiguous user corrections."""
+    if _is_affirmative_confirmation(message):
+        return {}, None, None
+    if re.fullmatch(r"\s*(?:yes|yeah|yep|yup|no|nope|nah|haan|han|ji|nahi|nahin|nhi|हाँ|हां|नहीं|नही)[.! ]*", message, re.I):
+        return {}, None, None
+    numeric = recover_labeled_numeric_update(message)
+    if numeric:
+        return numeric, None, next(iter(numeric))
+    field = _field_requested(message)
+    correction_marker = re.search(
+        r"\b(correct|correction|update|change|actually|mistake|wrong|incorrect|should be|instead|sahi|galat|badal)\b|"
+        r"(sahi|galat|badalna|sahi hai|गलत|सही)", message, re.I
+    )
+    if not correction_marker and not re.search(r"\b(no|nope|nah|nahi|nahin|हाँ|हां|yes)\b", message, re.I):
+        return {}, None, None
+    if field is None:
+        return {}, "Which answer would you like to correct, and what is the correct value?", None
+    if field not in BOOLEAN_FEATURES:
+        return {}, "Please give the corrected value with the field name and unit, for example: ‘my waist is 30 inches’.", None
+    if re.search(r"\b(sometimes|occasionally|not always)\b", message, re.I):
+        return {}, "I can only store this screening answer as yes or no. Should I record it as yes or no?", None
+    yes = bool(re.search(r"\b(yes|yeah|haan|han|true|correct|regular|occasionally|sometimes)\b|(?:हाँ|हां|सही)", message, re.I))
+    no = bool(re.search(r"\b(no|nope|nah|nahi|nahin|false|irregular)\b|(?:नहीं|नही)", message, re.I))
+    if yes == no:
+        return {}, "For that yes/no answer, please say yes or no. If you mean ‘sometimes’, tell me whether to record it as yes or no.", None
+    return {field: yes}, None, field
+
+
+def _summary_text(values: dict, skipped: set[str], pending: list[str], screening: Screening | None, hinglish: bool = False) -> str:
+    labels = {
+        "age": ("Age", "Umar"), "weight_kg": ("Weight", "Wazan"), "height_cm": ("Height", "Height"),
+        "cycle_irregular": ("Cycle regularity", "Periods ki regularity"), "cycle_length_days": ("Cycle length", "Cycle length"),
+        "weight_gain": ("Weight gain", "Weight gain"), "hair_growth": ("Increased hair growth", "Zyada hair growth"),
+        "skin_darkening": ("Skin darkening", "Skin darkening"), "hair_loss": ("Hair loss", "Hair loss"),
+        "acne": ("Acne", "Acne"), "fast_food": ("Frequent fast food", "Fast food"),
+        "regular_exercise": ("Regular exercise", "Regular exercise"), "hip_inch": ("Hip measurement", "Hip measurement"),
+        "waist_inch": ("Waist measurement", "Waist measurement"),
+    }
+    parts = []
+    for key in INTAKE_ORDER:
+        label = labels[key][1 if hinglish else 0]
+        if key not in values:
+            state = "Skipped" if key in skipped else "Not provided"
+            parts.append(f"{label}: {state}")
+            continue
+        value = values[key]
+        if key == "cycle_irregular": value = ("irregular" if value else "regular")
+        elif key in BOOLEAN_FEATURES:
+            value = ("haan" if value else "nahi") if hinglish else ("yes" if value else "no")
+        elif key == "weight_kg": value = f"{value:g} kg"
+        elif key == "height_cm": value = f"{value:g} cm"
+        elif key in {"hip_inch", "waist_inch"}: value = f"{value:g} inches"
+        elif key in {"age", "cycle_length_days"}: value = f"{value} {'saal' if key == 'age' and hinglish else 'years' if key == 'age' else 'din' if hinglish else 'days'}"
+        parts.append(f"{label}: {value}")
+    for key, label in (("bmi", "Calculated BMI"), ("waist_hip_ratio", "Calculated waist-to-hip ratio")):
+        if key in values: parts.append(f"{label}: {values[key]:g} (calculated from recorded measurements)")
+    result = "Not calculated yet for this screening."
+    if screening is not None:
+        result = f"{screening.risk_probability * 100:.0f}% · {screening.risk_label} range (saved screening estimate; not a diagnosis)."
+    if not values:
+        intro = "Abhi tak koi jawab record nahi hua." if hinglish else "There is not enough information for a complete summary yet."
+    else:
+        intro = "Aapki current screening summary:" if hinglish else "Your current screening summary:"
+    missing_text = ", ".join(labels[name][1 if hinglish else 0] for name in pending) or "None"
+    tail = (f"\n\nScreening estimate: {result}\nAbhi baaki: {missing_text}. Aap jawab de sakte hain ya optional measurements skip kar sakte hain." if hinglish else
+            f"\n\nScreening estimate: {result}\nStill missing: {missing_text}. You can provide these answers or skip optional measurements.")
+    return intro + "\n" + "\n".join(f"• {part}" for part in parts) + tail
+
+
+def _lookup_reply(message: str, session, screening: Screening | None) -> str | None:
+    text = message.lower()
+    hinglish = _uses_hinglish(session.history)
+    if re.search(r"(which answers|what answers).{0,20}(missing|not provided)|kya.{0,20}(nahi bataya|missing)", text, re.I):
+        labels = {name: aliases[0] for name, aliases in _FIELD_ALIASES.items()}
+        absent = [labels[name] for name in missing(session)]
+        return ("Abhi yeh details nahi di gayi hain: " if hinglish else "Not provided yet: ") + (", ".join(absent) or "none")
+    field = _field_requested(message)
+    if field is None:
+        if re.search(r"(estimate|score|risk).{0,25}(current|my|mera|meri)?|(current|my|mera|meri).{0,25}(estimate|score|risk)", text):
+            if screening:
+                return f"This screening’s saved estimate is {screening.risk_probability * 100:.0f}% ({screening.risk_label} range). It is not a diagnosis."
+            return "There is no screening estimate for this active conversation yet."
+        return None
+    if field not in session.values:
+        label = _FIELD_ALIASES[field][0]
+        return (f"Is screening ke liye {label} record nahi hai. Aap ab bata sakte hain." if hinglish else
+                f"I don’t have a {label} recorded for this screening. You can provide it now or skip it if optional.")
+    value = session.values[field]
+    if field == "cycle_irregular": value = ("irregular" if value else "regular")
+    elif field in BOOLEAN_FEATURES: value = ("haan" if value else "nahi") if hinglish else ("yes" if value else "no")
+    elif field == "weight_kg": value = f"{value:g} kg"
+    elif field == "height_cm": value = f"{value:g} cm"
+    elif field in {"hip_inch", "waist_inch"}: value = f"{value:g} inches"
+    elif field in {"age", "cycle_length_days"}: value = str(value)
+    label = _FIELD_ALIASES[field][0]
+    prefix = "Aapke record mein" if hinglish else "Your recorded"
+    return f"{prefix} {label} {'hai' if hinglish else 'is'} {value}."
 
 
 def _looks_like_question(message: str) -> bool:
@@ -198,10 +338,113 @@ def chat(
             session_id=session_id, reply=reply, collected=session.values,
             missing=missing(session), complete=False,
         )
-    if session.screening_id is not None:
-        raise HTTPException(status_code=409, detail="This screening is complete; start a new session.")
-
     session.history.append({"role": "user", "content": request.message})
+    screening = None
+    if session.screening_id is not None:
+        screening = db.query(Screening).filter(
+            Screening.id == session.screening_id, Screening.user_id == user.id,
+            Screening.completed.is_(True),
+        ).first()
+
+    if _is_summary_request(request.message):
+        reply = _summary_text(session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
+        session.history.append({"role": "assistant", "content": reply})
+        return ChatResponse(
+            session_id=session_id, reply=reply, collected=session.values, missing=missing(session),
+            complete=session.screening_id is not None, screening_id=session.screening_id,
+            prediction=None, awaiting_confirmation=session.awaiting_confirmation, message_type="summary",
+        )
+
+    if _is_personal_lookup(request.message):
+        reply = _lookup_reply(request.message, session, screening) or "Please tell me which recorded detail you want to check."
+        session.history.append({"role": "assistant", "content": reply})
+        return ChatResponse(
+            session_id=session_id, reply=reply, collected=session.values, missing=missing(session),
+            complete=session.screening_id is not None, screening_id=session.screening_id,
+            awaiting_confirmation=session.awaiting_confirmation,
+        )
+
+    correction_updates, clarification, corrected_field = _explicit_correction(request.message)
+    correction_context = session.awaiting_confirmation or session.screening_id is not None or _is_correction_message(request.message) or bool(re.search(
+        r"\b(change|correct|update|previous answer|earlier answer|mistake|incorrect|wrong)\b|"
+        r"(jawab.{0,20}(badal|galat|sahi)|गलत|सही)", request.message, re.I))
+    if correction_context and (correction_updates or clarification):
+        if clarification:
+            session.history.append({"role": "assistant", "content": clarification})
+            return ChatResponse(session_id=session_id, reply=clarification, collected=session.values,
+                missing=missing(session), complete=session.screening_id is not None,
+                screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation)
+        candidate = deepcopy(session)
+        try:
+            changed = merge_features(candidate, correction_updates)
+            derive_features(candidate)
+        except (TypeError, ValueError) as error:
+            reply = f"I couldn’t apply that correction, and your saved answer is unchanged: {error}. Please provide a valid value with its unit."
+            session.history.append({"role": "assistant", "content": reply})
+            return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+                missing=missing(session), complete=session.screening_id is not None,
+                screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation)
+        if not changed:
+            reply = "That answer already has this value.\n\n" + _summary_text(
+                session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
+            session.history.append({"role": "assistant", "content": reply})
+            return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+                missing=missing(session), complete=session.screening_id is not None,
+                screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation,
+                message_type="summary")
+        if session.screening_id is not None:
+            # Keep completed history immutable: successful corrections create a new
+            # completed snapshot only after recalculation and DB commit both succeed.
+            payload = {**candidate.values}
+            for feature in OPTIONAL:
+                payload.setdefault(feature, 0.0)
+            from app.ml.predictor import load_assets
+            _, model_features = load_assets()
+            model_payload = {name: payload[name] for name in model_features}
+            try:
+                output = predict(model_payload)
+                corrected_screening = Screening(
+                    user_id=user.id,
+                    feature_state_json={"features": payload, "feature_importances": output.feature_importances,
+                        "agreement_score": output.agreement_score, "model_probabilities": output.model_probabilities},
+                    risk_probability=output.probability, risk_label=output.risk_label, completed=True,
+                )
+                db.add(corrected_screening)
+                db.commit()
+                db.refresh(corrected_screening)
+            except Exception as error:
+                db.rollback()
+                reply = "I couldn’t save and recalculate that correction, so your previous answer and estimate remain unchanged. Please try again."
+                session.history.append({"role": "assistant", "content": reply})
+                raise HTTPException(status_code=503, detail=reply) from error
+            candidate.screening_id = corrected_screening.id
+            candidate.history = session.history
+            session.values = candidate.values
+            session.skipped = candidate.skipped
+            session.screening_id = corrected_screening.id
+            screening = corrected_screening
+            change_text = f"Updated {corrected_field.replace('_', ' ')}; the estimate has been recalculated."
+            prediction = output
+            is_complete = True
+        else:
+            session.values = candidate.values
+            session.skipped = candidate.skipped
+            if corrected_field in session.skipped:
+                session.skipped.discard(corrected_field)
+            change_text = f"Updated {corrected_field.replace('_', ' ')}."
+            prediction = None
+            is_complete = False
+        reply = change_text + "\n\n" + _summary_text(
+            session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
+        session.history.append({"role": "assistant", "content": reply})
+        return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+            missing=missing(session), complete=is_complete, prediction=prediction,
+            screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation,
+            message_type="summary")
+
+    if session.screening_id is not None:
+        raise HTTPException(status_code=409, detail="This screening is complete; start a new session to add or change other information.")
+
     if not session.screening_started:
         if _looks_like_question(request.message):
             reply = _answer_question_then_offer_start(request.message, session.history)

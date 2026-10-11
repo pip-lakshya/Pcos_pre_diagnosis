@@ -155,6 +155,8 @@ def recover_labeled_numeric_update(message: str) -> dict:
         "weight_kg": ("weight", "wazan", "wajan", "वज़न", "वजन"),
         "height_cm": ("height", "lambai", "लंबाई", "लम्बाई"),
         "cycle_length_days": ("cycle length", "period length", "cycle ke din", "cycle kitne din", "पीरियड साइकिल"),
+        "hip_inch": ("hip measurement", "hip", "hips", "कूल्हे"),
+        "waist_inch": ("waist measurement", "waist", "कमर"),
     }
     unit_pattern = r"(kg|kilograms?|lb|lbs|pounds?|cm|cms|centimeters?|in|inches?)?"
     label_matches = []
@@ -186,6 +188,8 @@ def recover_labeled_numeric_update(message: str) -> dict:
         number /= 2.20462
     elif feature == "height_cm" and unit in {"in", "inch", "inches"}:
         number *= 2.54
+    elif feature in {"hip_inch", "waist_inch"} and unit in {"cm", "cms", "centimeter", "centimeters"}:
+        number /= 2.54
     if feature in INTEGER_FEATURES:
         return {feature: int(number)} if number.is_integer() else {}
     return {feature: number}

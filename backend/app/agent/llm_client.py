@@ -93,14 +93,6 @@ def next_question(history: list, missing: list[str], confirmed: dict | None = No
     return question_for_field(field)
 
 
-def agreement_note(agreement_score: float) -> str:
-    if agreement_score >= 0.8:
-        return "Our models strongly agree on this estimate."
-    if agreement_score >= 0.6:
-        return "Our models show some disagreement, so this estimate is less certain."
-    return "Our models show noticeable disagreement, so this estimate is especially uncertain."
-
-
 def explain_prediction(
     probability: float, risk_label: str, feature_importances: dict,
     agreement_score: float, history: list,
@@ -119,8 +111,8 @@ def explain_prediction(
                 "This is a screening estimate, not a diagnosis. Never diagnose PCOS, claim certainty, "
                 "or invent causes. Explain that only a healthcare professional can evaluate the "
                 "person and recommend discussing concerns with a doctor. Keep the response concise. "
-                "Describe model agreement only with the supplied plain-language note. Never expose "
-                "agreement numbers or member counts. Return natural conversational text only, not JSON or code."
+                "Do not claim confidence, certainty, agreement between models, validation, diagnosis, or "
+                "clinical reliability. Return natural conversational text only, not JSON or code."
             ),
         },
         *history[-6:],
@@ -129,8 +121,6 @@ def explain_prediction(
             "content": (
                 f"The model ensemble's mean positive-class probability is {probability:.4f} "
                 f"({probability * 100:.1f}%), and its screening label is {risk_label!r}. "
-                f"Include this plain-language confidence note in your answer: {agreement_note(agreement_score)} "
-                "Do not mention agreement numbers or how many models were used. "
                 f"The model's feature_importances are {list(feature_importances.items())[:5]}. "
                 "Explain the screening result in plain language. You may describe these as broad "
                 "model input importance, not as causes or proof about this person. Do not change "
@@ -144,7 +134,6 @@ def explain_prediction(
         messages=messages,
         max_tokens=220,
     )
-    note = agreement_note(agreement_score)
     choices = getattr(response, "choices", None) or []
     message = getattr(choices[0], "message", None) if choices else None
     text = getattr(message, "content", None)
@@ -157,11 +146,10 @@ def explain_prediction(
         # Complete and persist the screening even when the optional language
         # generation call returns no user-facing text. The model's prediction
         # remains the sole source of the estimate.
-        return f"{fallback_explanation(probability, risk_label)} Please consult a doctor about personal concerns. {note}"
+        return f"{fallback_explanation(probability, risk_label)} Please consult a doctor about personal concerns."
 
     answer = text.strip()
-    if note.lower() not in answer.lower():
-        answer = f"{answer} {note}"
+    answer = re.sub(r"(?i)our models (?:strongly agree|show some disagreement|show noticeable disagreement)[^.]*\.?", "", answer).strip()
     if "doctor" not in answer.lower() and "healthcare professional" not in answer.lower():
         answer += " Please discuss personal concerns with a doctor."
     return answer

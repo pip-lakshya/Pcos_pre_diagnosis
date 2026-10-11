@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.agent.research_provider import KnowledgeBaseProvider, PERSONALIZED_INSIGHTS_DISCLAIMER
-from app.api.research import _saved_details_answer, build_screening_context
+from app.api.research import ResearchRequest, _saved_details_answer, build_screening_context, research
 
 
 class ResearchContextTests(unittest.TestCase):
@@ -68,6 +68,36 @@ class ResearchContextTests(unittest.TestCase):
         self.assertIn("irregular cycles", user_prompt)
         self.assertIn("reported skin darkening", user_prompt)
         self.assertNotIn("0.74", user_prompt)
+
+    def test_historical_summary_uses_requested_user_owned_screening(self):
+        selected = SimpleNamespace(id=10,user_id=3,risk_label="lower",risk_probability=.44,
+            feature_state_json={"features":{"age":24,"hip_inch":37,"waist_inch":0}})
+        calls=[]
+        class Query:
+            def filter(self,*conditions): calls.append(conditions); return self
+            def first(self): return selected
+            def order_by(self,*args): return self
+        class DB:
+            def query(self,*args): return Query()
+        result=research(ResearchRequest(question="Show my summary",screening_id=10),
+            SimpleNamespace(id=3),DB(),SimpleNamespace())
+        self.assertIn("44% (lower range)",result.answer)
+        self.assertIn("Age: 24",result.answer)
+        self.assertIn("Reported hip measurement: 37 in",result.answer)
+        self.assertIn("Reported waist measurement: not provided",result.answer)
+        self.assertEqual(len(calls),2)  # user ownership plus selected screening ID
+
+    def test_unknown_or_other_users_historical_screening_is_not_returned(self):
+        from fastapi import HTTPException
+        class Query:
+            def filter(self,*conditions): return self
+            def first(self): return None
+        class DB:
+            def query(self,*args): return Query()
+        with self.assertRaises(HTTPException) as error:
+            research(ResearchRequest(question="Show my summary",screening_id=999),
+                SimpleNamespace(id=3),DB(),SimpleNamespace())
+        self.assertEqual(error.exception.status_code,404)
 
 
 if __name__ == "__main__":

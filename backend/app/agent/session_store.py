@@ -77,7 +77,9 @@ def merge_features(session: Session, updates: dict) -> set[str]:
     if unknown:
         raise ValueError(f"Extractor returned non-raw or unknown features: {sorted(unknown)}")
 
-    changed: set[str] = set()
+    # Validate the whole extraction before mutating canonical state. A bad value
+    # in one field must never leave earlier fields from the same turn committed.
+    normalized_updates = {}
     for name, value in updates.items():
         if value is None:
             continue
@@ -97,7 +99,10 @@ def merge_features(session: Session, updates: dict) -> set[str]:
             if value <= 0:
                 raise ValueError(f"Feature {name} must be greater than zero")
             normalized = float(value)
+        normalized_updates[name] = normalized
 
+    changed: set[str] = set()
+    for name, normalized in normalized_updates.items():
         if session.values.get(name) != normalized:
             changed.add(name)
         session.values[name] = normalized
@@ -113,11 +118,15 @@ def derive_features(session: Session) -> None:
     height = session.values.get("height_cm")
     if weight is not None and height is not None:
         session.values["bmi"] = round(weight / (height / 100) ** 2, 2)
+    else:
+        session.values.pop("bmi", None)
 
     hip = session.values.get("hip_inch")
     waist = session.values.get("waist_inch")
     if hip is not None and waist is not None:
         session.values["waist_hip_ratio"] = round(waist / hip, 3)
+    else:
+        session.values.pop("waist_hip_ratio", None)
 
     # Research/evaluation composites are Python-only session annotations. They are
     # intentionally absent from the canonical model feature JSON and never enter
@@ -125,6 +134,8 @@ def derive_features(session: Session) -> None:
     components = ("hair_growth", "skin_darkening", "acne", "hair_loss")
     if all(name in session.values for name in components):
         session.values["androgen_score"] = sum(session.values[name] for name in components)
+    else:
+        session.values.pop("androgen_score", None)
 
     if all(name in session.values for name in ("weight_gain", "fast_food", "bmi")):
         session.values["metabolic_score"] = (
@@ -132,13 +143,19 @@ def derive_features(session: Session) -> None:
             + session.values["fast_food"]
             + int(session.values["bmi"] > 25)
         )
+    else:
+        session.values.pop("metabolic_score", None)
 
     if all(name in session.values for name in ("bmi", "waist_hip_ratio")):
         session.values["physical_risk"] = round(
             session.values["bmi"] * session.values["waist_hip_ratio"], 3
         )
+    else:
+        session.values.pop("physical_risk", None)
 
     if all(name in session.values for name in ("cycle_irregular", "cycle_length_days")):
         session.values["cycle_severity"] = (
             session.values["cycle_irregular"] * session.values["cycle_length_days"]
         )
+    else:
+        session.values.pop("cycle_severity", None)

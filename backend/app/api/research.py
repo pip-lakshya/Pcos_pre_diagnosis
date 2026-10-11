@@ -26,6 +26,7 @@ class ResearchTurn(BaseModel):
 class ResearchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     conversation: list[ResearchTurn] = Field(default_factory=list, max_length=12)
+    screening_id: int | None = None
 
 
 class ResearchResponse(BaseModel):
@@ -55,7 +56,7 @@ _BOOLEAN_INPUTS = {
     "hair_loss", "acne", "fast_food", "regular_exercise",
 }
 _DETAILS_QUERY = re.compile(
-    r"\b(my (?:saved )?(?:details|answers|responses)|tell me my (?:details|answers)|show me my (?:details|answers)|"
+    r"\b(my (?:saved )?(?:details|answers|responses|summary)|tell me my (?:details|answers|summary)|show me my (?:details|answers|summary)|show my summary|"
     r"what did i (?:tell|answer|provide|say)|what did you (?:record|save)|details you (?:filled|recorded|saved)|"
     r"details i (?:gave|provided|filled)|what have i (?:filled|answered))\b|"
     r"(meri details|mere (?:screening )?details|mere jawab|maine kya (?:bhara|bataya|diya)|maine kya.{0,20}details|maine jo (?:bataya|diya))", re.IGNORECASE
@@ -81,9 +82,13 @@ def _saved_details_answer(question: str, screening: Screening) -> str | None:
     values = []
     for key, label in labels.items():
         if key not in features:
+            if key in {"hip_inch", "waist_inch"}:
+                values.append(f"{label}: not provided (optional)")
             continue
         value = features[key]
         if key in {"hip_inch", "waist_inch", "waist_hip_ratio"} and value in (0, 0.0, None):
+            if key in {"hip_inch", "waist_inch"}:
+                values.append(f"{label}: not provided (optional)")
             continue
         if key in boolean_fields:
             value = "yes" if value in (1, True) else "no"
@@ -99,12 +104,12 @@ def _saved_details_answer(question: str, screening: Screening) -> str | None:
     details = "; ".join(values) if values else "No saved input details were available."
     if re.search(r"[\u0900-\u097f]|\b(meri|mere|maine|kya|jawab)\b", question.lower()):
         return (
-            f"Aapke latest screening mein yeh details save hui thi: {details}. Model ka saved estimate {risk} tha. "
+            f"Is saved screening mein yeh details record hui thi: {details}. Model ka saved estimate {risk} tha. "
             "Yeh screening estimate hai, diagnosis nahi; apni health concerns ke liye doctor se salah lein. "
             "You can correct any detail in a new screening conversation."
         )
     return (
-        f"Your latest saved screening recorded: {details}. The model's saved estimate was {risk}. "
+        f"This saved screening recorded: {details}. The model's saved estimate was {risk}. "
         "This is a screening estimate, not a diagnosis; please consult a doctor about personal concerns. "
         "You can correct any detail in a new screening conversation."
     )
@@ -135,12 +140,13 @@ def research(
     db: Session = Depends(get_db),
     provider: ResearchProvider = Depends(get_research_provider),
 ):
-    screening = (
-        db.query(Screening)
-        .filter(Screening.user_id == user.id, Screening.completed.is_(True))
-        .order_by(desc(Screening.created_at), desc(Screening.id))
-        .first()
-    )
+    query = db.query(Screening).filter(Screening.user_id == user.id, Screening.completed.is_(True))
+    if request.screening_id is not None:
+        screening = query.filter(Screening.id == request.screening_id).first()
+        if screening is None:
+            raise HTTPException(status_code=404, detail="That screening was not found in your account.")
+    else:
+        screening = query.order_by(desc(Screening.created_at), desc(Screening.id)).first()
     if screening is None:
         raise HTTPException(status_code=409, detail="Complete a screening before asking a personalized follow-up question.")
     context = build_screening_context(screening)
