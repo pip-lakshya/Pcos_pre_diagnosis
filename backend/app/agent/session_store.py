@@ -50,6 +50,9 @@ class Session:
     intake_turns: int = 0
     awaiting_confirmation: bool = False
     screening_started: bool = False
+    active_question_id: str | None = None
+    last_answered_question_id: str | None = None
+    response_cache: dict[str, dict] = field(default_factory=dict)
 
 
 SESSIONS: dict[tuple[int, str], Session] = {}

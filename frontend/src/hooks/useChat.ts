@@ -34,7 +34,8 @@ export function useChat(token:string,onUnauthorized:()=>void){
   if(restart){setMessages([{role:'assistant',content:WELCOME}]);setSessionId(undefined);setComplete(false);setPrediction(null);setAwaitingConfirmation(false)}
   setMessages(m=>[...m,{role:'user',content}]);setBusy(true);
   try{
-   const response=await fetch(`${API}/chat`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({session_id:restart?undefined:sessionId,message:content})});
+   const messageId=typeof crypto.randomUUID==='function'?crypto.randomUUID():`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+   const response=await fetch(`${API}/chat`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify({session_id:restart?undefined:sessionId,message_id:messageId,message:content})});
    if(response.status===401){onUnauthorized();throw new Error('Your session expired, please log in again.')}
    const data=await responseBody(response);if(!response.ok)throw new Error(data.detail||`The screening service returned HTTP ${response.status}.`);
    const reply=normalizeAssistantText(data.reply||'');setSessionId(data.session_id);setComplete(Boolean(data.complete));if(data.prediction)setPrediction(data.prediction);else if(restart)setPrediction(null);setAwaitingConfirmation(Boolean(data.awaiting_confirmation));setMessages(m=>[...m,{role:'assistant',content:reply,kind:data.message_type==='summary'?'summary':undefined}]);return reply;

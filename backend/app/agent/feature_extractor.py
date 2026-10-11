@@ -105,7 +105,59 @@ def _normalize_boolean(value):
     return None
 
 
-def _recover_simple_answer(message: str, history: list) -> dict:
+def classify_boolean_reply(value: str) -> bool | None:
+    """Deterministically classify an explicit yes/no utterance; ambiguity stays unanswered."""
+    text = value.lower().strip()
+    text = re.sub(r"[.!?,;:]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if is_uncertain_boolean_reply(text):
+        return None
+    negative = bool(re.search(r"\b(no|nope|nah|nahi|nahin|nhi|naa|na|false|negative)\b|(?:नहीं|नही)", text))
+    positive = bool(re.search(r"\b(yes|yeah|yep|yup|haan|han|ji|true|affirmative)\b|(?:हाँ|हां|जी)", text))
+    # Common affirmative Hindi answer to a symptom question: “aaye hain”.
+    positive = positive or bool(re.search(r"\b(aaye|aaya|aayi|hue|hui)\s+(hain|hai|ho)\b", text))
+    if negative and re.search(r"\b(nahi|nahin|nhi|na|naa)\b.{0,20}\b(aaye|aaya|aayi|hue|hui|hain|hai)\b", text):
+        positive = False
+    if negative == positive:
+        return None
+    return not negative
+
+
+def is_uncertain_boolean_reply(value: str) -> bool:
+    text = value.lower().strip()
+    return any(re.search(pattern, text) for pattern in (
+        r"\bnot sure\b", r"\bunsure\b", r"\bdon't know\b", r"\bdont know\b",
+        r"\bdo not know\b", r"\bno idea\b", r"\bcan't tell\b", r"\bcannot tell\b",
+        r"\bpata nahi\b", r"\bnahi pata\b", r"\bnot certain\b", r"\bmaybe\b",
+    ))
+
+
+_BOOLEAN_LABELS = {
+    "cycle_irregular": ("irregular cycle", "irregular period", "period regularity", "periods", "cycle"),
+    "weight_gain": ("weight gain", "gained weight"),
+    "hair_growth": ("hair growth", "facial hair", "body hair", "baal"),
+    "skin_darkening": ("skin darkening", "dark skin", "dark patches"),
+    "hair_loss": ("hair loss", "hair fall", "hair thinning"),
+    "acne": ("acne", "pimples", "pimple"),
+    "fast_food": ("fast food", "junk food"),
+    "regular_exercise": ("regular exercise", "exercise", "workout"),
+}
+
+
+def _recover_labeled_boolean_answer(message: str) -> dict:
+    text = message.lower()
+    detected = {
+        key for key, aliases in _BOOLEAN_LABELS.items()
+        if any(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text) for alias in aliases)
+    }
+    if len(detected) != 1:
+        return {}
+    target = next(iter(detected))
+    answer = classify_boolean_reply(message)
+    return {target: answer} if answer is not None else {}
+
+
+def _recover_simple_answer(message: str, history: list, active_question_id: str | None = None) -> dict:
     """Recover a clear short answer using the immediately preceding assistant question."""
     previous_question = next(
         (turn.get("content", "").lower() for turn in reversed(history) if turn.get("role") == "assistant"),
@@ -117,13 +169,13 @@ def _recover_simple_answer(message: str, history: list) -> dict:
         for term in terms
         if term in previous_question
     ]
-    target = max(matches)[1] if matches else None
+    target = active_question_id if active_question_id in RAW_FEATURES else (max(matches)[1] if matches else None)
     if not target:
         return {}
 
     value = message.strip()
     if target in BOOLEAN_FEATURES:
-        normalized = _normalize_boolean(value)
+        normalized = classify_boolean_reply(value)
         return {target: normalized} if normalized is not None else {}
 
     match = re.fullmatch(
@@ -210,7 +262,7 @@ def question_feature(history: list) -> str | None:
     return max(matches)[1] if matches else None
 
 
-def skip_targets(message: str, history: list) -> set[str]:
+def skip_targets(message: str, history: list, active_question_id: str | None = None) -> set[str]:
     """Prefer an explicitly named field; otherwise apply a short skip to the active question."""
     text = message.lower()
     aliases = {
@@ -232,14 +284,14 @@ def skip_targets(message: str, history: list) -> set[str]:
     explicit = {name for name, terms in aliases.items() if any(term in text for term in terms)}
     if explicit:
         return explicit
-    active = question_feature(history)
+    active = active_question_id or question_feature(history)
     return {active} if active else set()
 
 
 def is_skip_answer(message: str) -> bool:
     text = message.lower().strip()
     return any(term in text for term in (
-        "skip", "don't know", "dont know", "do not know", "not sure", "prefer not",
+        "skip", "don't know", "dont know", "do not know", "prefer not",
         "rather not", "i cannot say", "can't say", "pata nahi", "nahi pata", "नहीं पता",
         "छोड़", "छोड", "नहीं मालूम",
     ))
@@ -266,13 +318,18 @@ def _normalize_explicit_units(message: str, updates: dict) -> dict:
     return updates
 
 
-def extract(message: str, current: dict, history: list) -> dict:
+def extract(message: str, current: dict, history: list, active_question_id: str | None = None) -> dict:
     labeled_update = recover_labeled_numeric_update(message)
     if labeled_update:
         return labeled_update
+    labeled_boolean = _recover_labeled_boolean_answer(message)
+    if labeled_boolean:
+        return labeled_boolean
+    if active_question_id in BOOLEAN_FEATURES and is_uncertain_boolean_reply(message):
+        return {}
     # The normal intake asks one field at a time. Handle concise answers locally
     # so a one-word yes/no or number does not wait on a remote model round trip.
-    simple_answer = _recover_simple_answer(message, history)
+    simple_answer = _recover_simple_answer(message, history, active_question_id)
     if simple_answer:
         return simple_answer
 
@@ -306,7 +363,7 @@ def extract(message: str, current: dict, history: list) -> dict:
     tool_calls = assistant_message.tool_calls or []
     matching_calls = [call for call in tool_calls if call.function.name == "extract_pcos_features"]
     if not matching_calls:
-        return _recover_simple_answer(message, history)
+        return _recover_simple_answer(message, history, active_question_id)
 
     extracted = {}
     for call in matching_calls:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agent.feature_extractor import (
+    classify_boolean_reply,
     extract,
     is_skip_answer,
     recover_labeled_numeric_update,
@@ -22,6 +23,49 @@ from app.models.schemas import ChatRequest, ChatResponse
 router = APIRouter()
 MAX_INTAKE_TURNS = 15
 _education_provider = KnowledgeBaseProvider()
+
+
+def _chat_response(session, request: ChatRequest, **fields) -> ChatResponse:
+    response = ChatResponse(**fields)
+    if request.message_id:
+        session.response_cache[request.message_id] = response.model_dump(mode="json")
+        while len(session.response_cache) > 50:
+            session.response_cache.pop(next(iter(session.response_cache)))
+    return response
+
+
+def _next_session_question(session) -> str:
+    outstanding = missing(session)
+    session.active_question_id = outstanding[0] if outstanding else None
+    return next_question(session.history, outstanding, session.values)
+
+
+def _is_repeat_request(message: str) -> bool:
+    return bool(re.search(r"\b(repeat|say that again|ask me again|repeat the question)\b|(?:phir se pucho|dobara pucho|फिर से पूछो)", message, re.I))
+
+
+def _is_answer_reminder(message: str) -> bool:
+    return bool(re.search(r"\b(i said|i already said|i told you|i have already answered|i already answered)\b|"
+                          r"(maine kaha|maine pehle hi bataya|maine jawab diya)", message, re.I))
+
+
+def _question_for_active(session) -> str:
+    if session.active_question_id:
+        return next_question(session.history, [session.active_question_id], session.values)
+    return _next_session_question(session)
+
+
+def _answer_during_screening(message: str, session) -> str:
+    question = _question_for_active(session)
+    if re.search(r"\bwhy\b|kyun|क्यों", message, re.I):
+        answer = "I ask this as one self-reported screening question. It does not diagnose PCOS; you can answer yes or no, say you don’t know, or skip an optional measurement."
+    else:
+        try:
+            answer = _education_provider.answer(message, {"recent_conversation": session.history[-6:]})
+        except Exception:
+            snippets = _education_provider.retrieve(message)
+            answer = " ".join(item["text"] for item in snippets[:2]) if snippets else "I can help with general PCOS information, but I don’t have enough curated information to answer that reliably. Please consult a healthcare professional for personal concerns."
+    return f"{answer}\n\nWe can continue with: {question}"
 
 _SUMMARY_INTENT = re.compile(
     r"\b(show|give|summari[sz]e|display|tell me|what have you recorded|what did i provide)\b.{0,50}\b(summary|answers|details|screening)\b|"
@@ -329,12 +373,14 @@ def chat(
 ):
     restart_requested = _is_restart_intent(request.message)
     session_id, session = get_session(None if restart_requested else request.session_id, user.id)
+    if request.message_id and request.message_id in session.response_cache:
+        return ChatResponse.model_validate(session.response_cache[request.message_id])
     if restart_requested:
         session.screening_started = True
         session.history.append({"role": "user", "content": request.message})
-        reply = next_question(session.history, missing(session), session.values)
+        reply = _next_session_question(session)
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(
+        return _chat_response(session, request,
             session_id=session_id, reply=reply, collected=session.values,
             missing=missing(session), complete=False,
         )
@@ -349,16 +395,23 @@ def chat(
     if _is_summary_request(request.message):
         reply = _summary_text(session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(
+        return _chat_response(session, request,
             session_id=session_id, reply=reply, collected=session.values, missing=missing(session),
             complete=session.screening_id is not None, screening_id=session.screening_id,
             prediction=None, awaiting_confirmation=session.awaiting_confirmation, message_type="summary",
         )
 
+    # Repair stale pointers from older in-memory sessions; never let a question
+    # already present in the canonical feature state remain active.
+    outstanding_before = missing(session)
+    if session.screening_started and not session.awaiting_confirmation:
+        if session.active_question_id not in outstanding_before:
+            session.active_question_id = outstanding_before[0] if outstanding_before else None
+
     if _is_personal_lookup(request.message):
         reply = _lookup_reply(request.message, session, screening) or "Please tell me which recorded detail you want to check."
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(
+        return _chat_response(session, request,
             session_id=session_id, reply=reply, collected=session.values, missing=missing(session),
             complete=session.screening_id is not None, screening_id=session.screening_id,
             awaiting_confirmation=session.awaiting_confirmation,
@@ -371,7 +424,7 @@ def chat(
     if correction_context and (correction_updates or clarification):
         if clarification:
             session.history.append({"role": "assistant", "content": clarification})
-            return ChatResponse(session_id=session_id, reply=clarification, collected=session.values,
+            return _chat_response(session, request, session_id=session_id, reply=clarification, collected=session.values,
                 missing=missing(session), complete=session.screening_id is not None,
                 screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation)
         candidate = deepcopy(session)
@@ -381,14 +434,14 @@ def chat(
         except (TypeError, ValueError) as error:
             reply = f"I couldn’t apply that correction, and your saved answer is unchanged: {error}. Please provide a valid value with its unit."
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+            return _chat_response(session, request, session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=session.screening_id is not None,
                 screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation)
         if not changed:
             reply = "That answer already has this value.\n\n" + _summary_text(
                 session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+            return _chat_response(session, request, session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=session.screening_id is not None,
                 screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation,
                 message_type="summary")
@@ -437,7 +490,7 @@ def chat(
         reply = change_text + "\n\n" + _summary_text(
             session.values, session.skipped, missing(session), screening, _uses_hinglish(session.history))
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(session_id=session_id, reply=reply, collected=session.values,
+        return _chat_response(session, request, session_id=session_id, reply=reply, collected=session.values,
             missing=missing(session), complete=is_complete, prediction=prediction,
             screening_id=session.screening_id, awaiting_confirmation=session.awaiting_confirmation,
             message_type="summary")
@@ -445,18 +498,35 @@ def chat(
     if session.screening_id is not None:
         raise HTTPException(status_code=409, detail="This screening is complete; start a new session to add or change other information.")
 
+    if session.screening_started and _is_repeat_request(request.message):
+        reply = _question_for_active(session)
+        session.history.append({"role": "assistant", "content": reply})
+        return _chat_response(session, request, session_id=session_id, reply=reply,
+            collected=session.values, missing=missing(session), complete=False,
+            awaiting_confirmation=session.awaiting_confirmation)
+
+    if session.screening_started and _is_answer_reminder(request.message) and classify_boolean_reply(request.message) is None:
+        previous = session.last_answered_question_id
+        if previous and previous in session.values:
+            prompt = _question_for_active(session)
+            reply = f"I have your previous answer recorded. Your current unanswered question is: {prompt}"
+            session.history.append({"role": "assistant", "content": reply})
+            return _chat_response(session, request, session_id=session_id, reply=reply,
+                collected=session.values, missing=missing(session), complete=False,
+                awaiting_confirmation=session.awaiting_confirmation)
+
     if not session.screening_started:
         if _looks_like_question(request.message):
             reply = _answer_question_then_offer_start(request.message, session.history)
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=False,
             )
         if _is_declining_start(request.message):
             reply = "Theek hai, screening abhi shuru nahi karunga. Jab aap ready hon, bas ‘start’ keh dein."
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=False,
             )
@@ -464,12 +534,22 @@ def chat(
         # or measurement answer also starts intake and is extracted normally.
         session.screening_started = True
         if _is_start_confirmation(request.message):
-            reply = next_question(session.history, missing(session), session.values)
+            reply = _next_session_question(session)
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=missing(session), complete=False,
             )
+    if session.screening_started and not session.awaiting_confirmation:
+        unanswered = missing(session)
+        if session.active_question_id not in unanswered:
+            session.active_question_id = unanswered[0] if unanswered else None
+    elif session.screening_started and _looks_like_question(request.message):
+        reply = _answer_during_screening(request.message, session)
+        session.history.append({"role": "assistant", "content": reply})
+        return _chat_response(session, request, session_id=session_id, reply=reply,
+            collected=session.values, missing=missing(session), complete=False,
+            awaiting_confirmation=session.awaiting_confirmation)
     correction_message = _is_correction_message(request.message)
     affirmative_confirmation = (
         session.awaiting_confirmation
@@ -485,7 +565,7 @@ def chat(
     skip_request = not session.awaiting_confirmation and is_skip_answer(request.message)
     skip_reply = None
     if skip_request:
-        targets = skip_targets(request.message, session.history[:-1])
+        targets = skip_targets(request.message, session.history[:-1], session.active_question_id)
         session.skipped.update(targets)
         if any(target not in OPTIONAL for target in targets):
             skip_reply = (
@@ -494,9 +574,22 @@ def chat(
             )
     try:
         # A confirmation such as “haan, sahi hai” is not a new clinical answer.
-        updates = {} if affirmative_confirmation or negative_confirmation or skip_request else extract(
-            request.message, session.values, session.history[:-1]
+        answer_target = session.active_question_id
+        if (_is_answer_reminder(request.message) and answer_target in session.values
+                and session.last_answered_question_id in session.values):
+            answer_target = session.last_answered_question_id
+        hair_restatement = (
+            bool(re.search(r"\b(aaye|aaya|aayi)\b", request.message.lower()))
+            and session.last_answered_question_id == "hair_growth"
+            and session.active_question_id != "hair_growth"
+            and classify_boolean_reply(request.message) is not None
         )
+        if hair_restatement:
+            updates = {"hair_growth": classify_boolean_reply(request.message)}
+        else:
+            updates = {} if affirmative_confirmation or negative_confirmation or skip_request else extract(
+                request.message, session.values, session.history[:-1], answer_target
+            )
     except Exception as error:
         raise HTTPException(status_code=502, detail="Feature extraction service failed: " + str(error))
     try:
@@ -511,11 +604,38 @@ def chat(
     if skip_request:
         outstanding = missing(session)
 
+    if session.active_question_id in updates and session.active_question_id not in outstanding:
+        session.last_answered_question_id = session.active_question_id
+    if outstanding:
+        session.active_question_id = outstanding[0]
+    else:
+        session.active_question_id = None
+
+    if hair_restatement and not session.awaiting_confirmation:
+        current_prompt = _question_for_active(session)
+        recorded = "yes" if session.values.get("hair_growth") else "no"
+        reply = f"I have your increased hair-growth answer recorded as {recorded}. Your current unanswered question is: {current_prompt}"
+        session.history.append({"role": "assistant", "content": reply})
+        return _chat_response(session, request, session_id=session_id, reply=reply,
+            collected=session.values, missing=outstanding, complete=False)
+
+    if (not changed and not skip_request and not session.awaiting_confirmation
+            and session.active_question_id is not None
+            and session.active_question_id in outstanding):
+        if session.active_question_id in BOOLEAN_FEATURES:
+            clarification = "I couldn’t tell whether that was yes or no. Please answer yes/no, or say you don’t know if you’d rather skip this question."
+        else:
+            clarification = f"I couldn’t record a clear value for that. {_question_for_active(session)}"
+        session.history.append({"role": "assistant", "content": clarification})
+        return _chat_response(session, request, session_id=session_id, reply=clarification,
+            collected=session.values, missing=outstanding, complete=False,
+            awaiting_confirmation=False)
+
     if session.awaiting_confirmation:
         if changed:
             reply = _confirmation_summary(session.values, session.skipped, _uses_hinglish(session.history))
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=outstanding, complete=False, awaiting_confirmation=True,
             )
@@ -528,7 +648,7 @@ def chat(
                     "so I can continue."
                 )
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=outstanding, complete=False, awaiting_confirmation=True,
             )
@@ -540,7 +660,7 @@ def chat(
                 + ". You can start again and provide those details if you want an estimate. This is not a diagnosis; please consult a doctor about personal concerns."
             )
             session.history.append({"role": "assistant", "content": reply})
-            return ChatResponse(
+            return _chat_response(session, request,
                 session_id=session_id, reply=reply, collected=session.values,
                 missing=[], complete=True, awaiting_confirmation=False,
             )
@@ -555,7 +675,7 @@ def chat(
         if skip_reply:
             reply = skip_reply + " " + reply
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(
+        return _chat_response(session, request,
             session_id=session_id,
             reply=reply,
             collected=session.values,
@@ -567,7 +687,7 @@ def chat(
         session.awaiting_confirmation = True
         reply = _confirmation_summary(session.values, session.skipped, _uses_hinglish(session.history))
         session.history.append({"role": "assistant", "content": reply})
-        return ChatResponse(
+        return _chat_response(session, request,
             session_id=session_id,
             reply=reply,
             collected=session.values,
@@ -619,7 +739,7 @@ def chat(
     db.refresh(screening)
     session.screening_id = screening.id
     session.history.append({"role": "assistant", "content": reply})
-    return ChatResponse(
+    return _chat_response(session, request,
         session_id=session_id,
         reply=reply,
         collected=payload,

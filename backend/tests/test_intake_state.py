@@ -168,6 +168,7 @@ class IntakeStateTests(unittest.TestCase):
         self.assertIs(feature_extractor._normalize_boolean("नहीं"), False)
         self.assertTrue(feature_extractor.is_skip_answer("mujhe waist ka pata nahi"))
         self.assertTrue(feature_extractor.is_skip_answer("मुझे नहीं पता"))
+        self.assertFalse(feature_extractor.is_skip_answer("not sure"))
         self.assertEqual(
             feature_extractor.skip_targets(
                 "waist ka nahi pata", [{"role": "assistant", "content": "Do you exercise regularly?"}]
@@ -316,6 +317,85 @@ class IntakeStateTests(unittest.TestCase):
         self.assertEqual(session.values["hip_inch"],36.0)
         self.assertEqual(session.screening_id,42)
         SESSIONS.pop((921,"failed-correction"),None)
+
+    def test_active_question_boolean_normalization_handles_hindi_and_reminders(self):
+        for phrase in ("no", "No", "NO", "nope", "nahi", "nahin", "nahi aaye", "nahi aaya",
+                       "nahi hain", "nahi hai", "nahi aaye hain", "naa", "na", "bilkul nahi", "I said no", "I already said no"):
+            with self.subTest(phrase=phrase):
+                self.assertIs(feature_extractor.classify_boolean_reply(phrase), False)
+        for phrase in ("yes", "haan", "han", "ji haan", "yes, I do", "aaye hain"):
+            with self.subTest(phrase=phrase):
+                self.assertIs(feature_extractor.classify_boolean_reply(phrase), True)
+        self.assertIsNone(feature_extractor.classify_boolean_reply("not sure"))
+        self.assertIsNone(feature_extractor.classify_boolean_reply("I don't know"))
+
+    def test_question_answering_uses_active_id_even_if_last_assistant_is_summary(self):
+        history=[{"role":"assistant","content":"Aapne jo details batayi hain: age 25."},
+                 {"role":"assistant","content":"Your current screening summary"}]
+        with patch.object(feature_extractor,"OpenAI",side_effect=AssertionError("should parse locally")):
+            self.assertEqual(feature_extractor.extract("nahi",{},history,"hair_growth"),{"hair_growth":False})
+
+    def test_full_reproduction_progresses_across_mid_screening_summary_and_reminders(self):
+        from app.models.schemas import ChatRequest
+        from app.agent.session_store import SESSIONS
+
+        user=SimpleNamespace(id=932)
+        session_id="hair-growth-loop-repro"
+        SESSIONS[(932,session_id)]=Session(user_id=932)
+        messages=("start","25","60","152","yes","28","haan","nahi")
+        responses=[]
+        for index,message in enumerate(messages):
+            response=chat(ChatRequest(session_id=session_id,message_id=f"loop-{index}",message=message),user,SimpleNamespace())
+            responses.append(response)
+        session=SESSIONS[(932,session_id)]
+        self.assertEqual(session.values["hair_growth"],0)
+        self.assertEqual(session.last_answered_question_id,"hair_growth")
+        self.assertEqual(session.active_question_id,"skin_darkening")
+        summary=chat(ChatRequest(session_id=session_id,message_id="loop-summary",message="Show my summary"),user,SimpleNamespace())
+        self.assertEqual(summary.message_type,"summary")
+        self.assertIn("Umar: 25 saal",summary.reply)
+        self.assertIn("Wazan: 60 kg",summary.reply)
+        self.assertIn("Height: 152 cm",summary.reply)
+        self.assertIn("Cycle length: 28 din",summary.reply)
+        self.assertIn("Zyada hair growth: nahi",summary.reply)
+        self.assertNotIn("Hip measurement: 36",summary.reply)
+        self.assertEqual(session.active_question_id,"skin_darkening")
+        reminder=chat(ChatRequest(session_id=session_id,message_id="loop-reminder",message="nahi aaye"),user,SimpleNamespace())
+        self.assertIn("recorded as no",reminder.reply)
+        self.assertEqual(session.active_question_id,"skin_darkening")
+        self.assertEqual(session.values["hair_growth"],0)
+        next_answer=chat(ChatRequest(session_id=session_id,message_id="loop-next",message="naa"),user,SimpleNamespace())
+        self.assertEqual(session.values["skin_darkening"],0)
+        self.assertEqual(session.active_question_id,"hair_loss")
+        self.assertNotIn("hair_growth",next_answer.reply.lower())
+        self.assertNotIn("age: 20",summary.reply.lower())
+        SESSIONS.pop((932,session_id),None)
+
+    def test_uncertain_answer_clarifies_without_advancing_and_retry_is_idempotent(self):
+        from app.models.schemas import ChatRequest
+        from app.agent.session_store import SESSIONS
+
+        user=SimpleNamespace(id=933)
+        session_id="uncertain-answer"
+        collected={"age":25,"weight_kg":60.0,"height_cm":152.0,"cycle_irregular":1,
+            "cycle_length_days":28,"weight_gain":1}
+        SESSIONS[(933,session_id)]=Session(user_id=933,values=collected,screening_started=True,
+            active_question_id="hair_growth",last_answered_question_id="weight_gain")
+        request=ChatRequest(session_id=session_id,message_id="same-message",message="not sure")
+        response=chat(request,user,SimpleNamespace())
+        session=SESSIONS[(933,session_id)]
+        self.assertIn("couldn’t tell",response.reply.lower())
+        self.assertNotIn("hair_growth",session.values)
+        self.assertEqual(session.active_question_id,"hair_growth")
+        history_length=len(session.history)
+        repeated=chat(request,user,SimpleNamespace())
+        self.assertEqual(repeated.model_dump(),response.model_dump())
+        self.assertEqual(len(session.history),history_length)
+        accepted=chat(ChatRequest(session_id=session_id,message_id="answer-no",message="nahi"),user,SimpleNamespace())
+        self.assertEqual(session.values["hair_growth"],0)
+        self.assertEqual(session.active_question_id,"skin_darkening")
+        self.assertNotIn("hair growth",accepted.reply.lower())
+        SESSIONS.pop((933,session_id),None)
 
 
 if __name__ == "__main__":
