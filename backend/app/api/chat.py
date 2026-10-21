@@ -23,6 +23,7 @@ from app.models.schemas import ChatRequest, ChatResponse
 router = APIRouter()
 MAX_INTAKE_TURNS = 15
 _education_provider = KnowledgeBaseProvider()
+_request_responses: dict[tuple[int, str], dict] = {}
 
 
 def _chat_response(session, request: ChatRequest, **fields) -> ChatResponse:
@@ -31,6 +32,10 @@ def _chat_response(session, request: ChatRequest, **fields) -> ChatResponse:
         session.response_cache[request.message_id] = response.model_dump(mode="json")
         while len(session.response_cache) > 50:
             session.response_cache.pop(next(iter(session.response_cache)))
+        cache_key = (session.user_id, request.message_id)
+        _request_responses[cache_key] = response.model_dump(mode="json")
+        while len(_request_responses) > 1000:
+            _request_responses.pop(next(iter(_request_responses)))
     return response
 
 
@@ -371,6 +376,10 @@ def chat(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if request.message_id:
+        cached_response = _request_responses.get((user.id, request.message_id))
+        if cached_response is not None:
+            return ChatResponse.model_validate(cached_response)
     restart_requested = _is_restart_intent(request.message)
     session_id, session = get_session(None if restart_requested else request.session_id, user.id)
     if request.message_id and request.message_id in session.response_cache:

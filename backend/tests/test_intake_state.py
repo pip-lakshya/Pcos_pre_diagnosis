@@ -397,6 +397,22 @@ class IntakeStateTests(unittest.TestCase):
         self.assertNotIn("hair growth",accepted.reply.lower())
         SESSIONS.pop((933,session_id),None)
 
+    def test_retry_of_new_screening_request_replays_same_session_response(self):
+        from app.models.schemas import ChatRequest
+        from app.agent.session_store import SESSIONS
+        from app.api.chat import _request_responses
+
+        user=SimpleNamespace(id=934)
+        request=ChatRequest(message_id="lost-start-response",message="start")
+        first=chat(request,user,SimpleNamespace())
+        repeated=chat(request,user,SimpleNamespace())
+
+        self.assertEqual(repeated.model_dump(),first.model_dump())
+        self.assertEqual(first.session_id,repeated.session_id)
+        self.assertEqual(len([key for key in SESSIONS if key[0]==934]),1)
+        SESSIONS.pop((934,first.session_id),None)
+        _request_responses.pop((934,"lost-start-response"),None)
+
 
 if __name__ == "__main__":
     unittest.main()
