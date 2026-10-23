@@ -9,6 +9,7 @@ from app.api.chat import router as chat_router
 from app.api.contact import router as contact_router
 from app.api.doctors import router as doctors_router
 from app.api.predict import router as predict_router
+from app.api.manual_screening import router as manual_screening_router
 from app.api.research import router as research_router
 from app.api.screenings import router as screenings_router
 from app.api.tts import router as tts_router
@@ -41,6 +42,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(predict_router)
+app.include_router(manual_screening_router)
 app.include_router(chat_router)
 app.include_router(contact_router)
 app.include_router(doctors_router)

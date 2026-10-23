@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_app_password: str = ""
     admin_notify_email: str = ""
-    email_provider: Literal["smtp", "resend", "gmail_api"] = "smtp"
+    email_provider: Literal["smtp", "resend", "gmail_api"] = "gmail_api"
     resend_api_key: str = ""
     email_from: str = ""
     gmail_sender_email: str = ""

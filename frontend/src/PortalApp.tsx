@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import {ChatWindow} from './components/ChatWindow';
 import {ChatErrorBoundary} from './components/ChatErrorBoundary';
+import {ScreeningHome} from './components/ScreeningHome';
 const API=import.meta.env.VITE_API_URL||'http://127.0.0.1:8000';
 type FieldErrors=Record<string,string>;
 function messageFromDetail(detail:any):string{return Array.isArray(detail)?detail.map(x=>x.msg).join(', '):String(detail||'Could not sign in.');}
@@ -12,6 +13,7 @@ export default function PortalApp(){
  const [mode,setMode]=useState<'login'|'register'>('login');
  const [fullName,setFullName]=useState('');const [email,setEmail]=useState('');const [phone,setPhone]=useState('');const [password,setPassword]=useState('');const [confirmPassword,setConfirmPassword]=useState('');
  const [error,setError]=useState('');const [fieldErrors,setFieldErrors]=useState<FieldErrors>({});const [busy,setBusy]=useState(false);
+ const [screen,setScreen]=useState<'home'|'chat'>('home');
  const clearToken=()=>{localStorage.removeItem('pcos_token');setToken('');setChecking(false)};
  const unauthorized=()=>{clearToken();setNotice('Your session expired, please log in again.')};
  useEffect(()=>{if(!token)return;fetch(`${API}/auth/me`,{headers:{Authorization:`Bearer ${token}`}}).then(r=>{if(!r.ok)unauthorized()}).catch(()=>{clearToken();setNotice('Your session could not be verified. Please log in again.')} ).finally(()=>setChecking(false))},[]);
@@ -19,7 +21,9 @@ export default function PortalApp(){
  const submit=async(e:React.FormEvent)=>{e.preventDefault();setError('');if(!validate())return;setBusy(true);try{const body=mode==='register'?{full_name:fullName,email,phone,password}:{email,password};const r=await fetch(`${API}/auth/${mode==='register'?'register':'login'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(messageFromDetail(data.detail));localStorage.setItem('pcos_token',data.access_token);setToken(data.access_token);setPassword('');setConfirmPassword('');setNotice('')}catch(err){setError(err instanceof Error?err.message:'Request failed.')}finally{setBusy(false)}};
  const inputClass='mt-1 w-full rounded-xl border border-accent-soft bg-white px-3 py-3 text-ink outline-none focus:ring-2 focus:ring-accent';
  if(checking)return <main className="grid min-h-dvh place-items-center bg-bg px-4 text-sm text-ink">Checking your sign-in…</main>;
- if(token)return <ChatErrorBoundary key={token}><ChatWindow token={token} onLogout={clearToken} onUnauthorized={unauthorized}/></ChatErrorBoundary>;
+ if(token)return screen==='chat'
+  ?<ChatErrorBoundary key={token}><ChatWindow token={token} onLogout={clearToken} onUnauthorized={unauthorized} onBackToHome={()=>setScreen('home')}/></ChatErrorBoundary>
+  :<ScreeningHome token={token} onChooseChat={()=>setScreen('chat')} onLogout={clearToken} onUnauthorized={unauthorized}/>;
  return <main className="grid min-h-dvh place-items-center bg-bg px-4 py-5 text-ink sm:py-8"><form onSubmit={submit} noValidate className="w-full max-w-md rounded-3xl border border-accent-soft bg-white p-5 shadow-sm sm:p-8"><div className="mb-5 text-center"><img src="/narisaarthi-logo.png" alt="Narisaarthi logo" className="mx-auto h-20 w-20 rounded-full object-cover sm:h-24 sm:w-24"/><h1 className="mt-3 text-xl font-semibold">PCOS Detection &amp; Pre-Diagnosis</h1><p className="mt-1 text-sm font-medium">Narisaarthi · Empower Your PCOS Journey</p><p className="mt-3 text-sm">{mode==='login'?'Welcome back':'Create your account'}</p><p className="mt-1 text-sm">Your account keeps your screening history together.</p></div>
  {mode==='register'&&<label className="mb-3 block text-sm">Full name<input autoComplete="name" value={fullName} onChange={e=>setFullName(e.target.value)} className={inputClass}/>{fieldErrors.full_name&&<small className="text-ink">{fieldErrors.full_name}</small>}</label>}
  <label className="mb-3 block text-sm">Email<input type="email" autoComplete="email" value={email} onChange={e=>setEmail(e.target.value)} className={inputClass}/>{fieldErrors.email&&<small className="text-ink">{fieldErrors.email}</small>}</label>

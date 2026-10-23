@@ -1,12 +1,12 @@
 import {useEffect,useRef,useState} from 'react';
-import {History,LoaderCircle,LogOut,MapPin,RefreshCw,RotateCcw,Send,Settings,Volume2,VolumeX} from 'lucide-react';
+import {History,House,LoaderCircle,LogOut,MapPin,RefreshCw,RotateCcw,Send,Settings,Volume2,VolumeX} from 'lucide-react';
 import {MessageBubble} from './MessageBubble';
 import {MicButton} from './MicButton';
 import {isScreeningStateMessage,useChat} from '../hooks/useChat';
 import {useVoice} from '../hooks/useVoice';
 
 const API=import.meta.env.VITE_API_URL||'http://127.0.0.1:8000';
-type Props={token:string;onLogout:()=>void;onUnauthorized:()=>void};
+type Props={token:string;onLogout:()=>void;onUnauthorized:()=>void;onBackToHome?:()=>void};
 
 function screeningTime(value:unknown){
  if(typeof value!=='string'||!value.trim())return 'Date unavailable';
@@ -20,7 +20,7 @@ function screeningTime(value:unknown){
 
 function screeningScore(value:unknown){const probability=Number(value);return Number.isFinite(probability)?`${Math.round(probability*100)}%`:'Score unavailable'}
 
-export function ChatWindow({token,onLogout,onUnauthorized}:Props){
+export function ChatWindow({token,onLogout,onUnauthorized,onBackToHome}:Props){
  const {messages,busy,error,send,askResearch,restart,retry,hasPendingRequest,complete,prediction,awaitingConfirmation}=useChat(token,onUnauthorized);
  const voice=useVoice(token,onUnauthorized);
  const [text,setText]=useState('');const [history,setHistory]=useState<any[]|null>(null);const [historyOpen,setHistoryOpen]=useState(false);const [historyLoading,setHistoryLoading]=useState(false);const [historyError,setHistoryError]=useState('');const [voiceSettings,setVoiceSettings]=useState(false);
@@ -41,7 +41,7 @@ export function ChatWindow({token,onLogout,onUnauthorized}:Props){
  const practoUrl=`https://www.practo.com/search/doctors?${practoParams.toString()}`;
 
  return <main className="mx-auto flex min-h-dvh w-full max-w-7xl flex-col bg-bg px-3 py-3 text-ink sm:px-7 sm:py-4 lg:h-dvh lg:min-h-0 lg:overflow-hidden">
-  <header className="mb-3 flex shrink-0 items-center gap-1.5 sm:mb-4 sm:gap-3"><a href="/" aria-label="NariSaarthi home"><img src="/narisaarthi-logo.png" alt="Narisaarthi logo" className="h-10 w-10 shrink-0 rounded-full object-cover sm:h-12 sm:w-12"/></a><div className="min-w-0 flex-1"><h1 className="text-sm font-semibold leading-5 sm:text-lg sm:leading-normal">PCOS Detection &amp; Pre-Diagnosis</h1><p className="text-[11px] leading-4 text-ink sm:text-xs">Narisaarthi · Empower Your PCOS Journey</p></div><button type="button" onClick={()=>{setText('');restart()}} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft sm:rounded-xl sm:border sm:border-accent-soft sm:px-3" aria-label="Start a new PCOS test" title="Start a new test"><RotateCcw size={18}/><span className="ml-1 hidden text-xs font-medium sm:inline">New test</span></button><button onClick={()=>setVoiceSettings(!voiceSettings)} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft" aria-label="Voice settings"><Settings size={19}/></button><button onClick={toggleHistory} disabled={historyLoading} aria-expanded={historyOpen} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft disabled:opacity-50" aria-label="Past screenings"><History size={19}/></button><button onClick={onLogout} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft" aria-label="Sign out"><LogOut size={19}/></button></header>
+  <header className="mb-3 flex shrink-0 items-center gap-1.5 sm:mb-4 sm:gap-3"><a href="/" aria-label="NariSaarthi home"><img src="/narisaarthi-logo.png" alt="Narisaarthi logo" className="h-10 w-10 shrink-0 rounded-full object-cover sm:h-12 sm:w-12"/></a><div className="min-w-0 flex-1"><h1 className="text-sm font-semibold leading-5 sm:text-lg sm:leading-normal">PCOS Detection &amp; Pre-Diagnosis</h1><p className="text-[11px] leading-4 text-ink sm:text-xs">Narisaarthi · Empower Your PCOS Journey</p></div>{onBackToHome&&<button type="button" onClick={onBackToHome} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft" aria-label="Screening options" title="Screening options"><House size={18}/></button>}<button type="button" onClick={()=>{setText('');restart()}} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft sm:rounded-xl sm:border sm:border-accent-soft sm:px-3" aria-label="Start a new PCOS test" title="Start a new test"><RotateCcw size={18}/><span className="ml-1 hidden text-xs font-medium sm:inline">New test</span></button><button onClick={()=>setVoiceSettings(!voiceSettings)} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft" aria-label="Voice settings"><Settings size={19}/></button><button onClick={toggleHistory} disabled={historyLoading} aria-expanded={historyOpen} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft disabled:opacity-50" aria-label="Past screenings"><History size={19}/></button><button onClick={onLogout} className="shrink-0 rounded-full p-2 text-ink hover:bg-accent-soft" aria-label="Sign out"><LogOut size={19}/></button></header>
   {voiceSettings&&voice.ttsProvider==='browser'&&<label className="mb-3 flex items-center gap-3 rounded-xl border border-accent-soft bg-white px-4 py-3 text-sm text-ink">Spoken voice<select aria-label="Spoken voice" className="ml-auto max-w-[65%] rounded-lg border border-accent-soft bg-white p-2 text-ink" value={voice.selectedVoice} onChange={e=>voice.setSelectedVoice(e.target.value)}><option value="">Recommended English voice</option>{voice.voices.map(v=><option key={`${v.name}-${v.lang}`} value={v.name}>{v.name} ({v.lang})</option>)}</select></label>}
   {voiceSettings&&voice.ttsProvider==='edge'&&<p className="mb-3 rounded-xl border border-accent-soft bg-white px-4 py-3 text-sm text-ink">Using server-configured Edge TTS.</p>}
   {voiceSettings&&voice.ttsProvider==='magpie'&&<p className="mb-3 rounded-xl border border-accent-soft bg-white px-4 py-3 text-sm text-ink">Using NVIDIA Magpie Multilingual · English Aria.</p>}

@@ -68,6 +68,7 @@ def _saved_details_answer(question: str, screening: Screening) -> str | None:
         return None
     stored = screening.feature_state_json or {}
     features = stored.get("features", {})
+    unknown_fields = set(stored.get("unknown_fields", []))
     labels = {
         "age": "Age", "weight_kg": "Reported weight", "height_cm": "Reported height",
         "cycle_irregular": "Irregular cycles", "cycle_length_days": "Cycle length",
@@ -91,7 +92,7 @@ def _saved_details_answer(question: str, screening: Screening) -> str | None:
                 values.append(f"{label}: not provided (optional)")
             continue
         if key in boolean_fields:
-            value = "yes" if value in (1, True) else "no"
+            value = "not sure (recorded as unknown)" if key in unknown_fields else ("yes" if value in (1, True) else "no")
         elif key in {"weight_kg", "height_cm", "bmi"}:
             unit = {"weight_kg": " kg", "height_cm": " cm", "bmi": ""}[key]
             value = f"{value:g}{unit}"
